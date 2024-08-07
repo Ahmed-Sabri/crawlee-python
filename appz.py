@@ -1,3 +1,4 @@
+#pip install 'crawlee[curl-impersonate]' 'crawlee[playwright]' curl_cffi
 import asyncio
 import os
 from crawlee.playwright_crawler import PlaywrightCrawler, PlaywrightCrawlingContext
