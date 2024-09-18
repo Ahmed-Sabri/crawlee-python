@@ -5,16 +5,18 @@ from typing import TYPE_CHECKING, Any, Optional
 try:
     from curl_cffi.requests import AsyncSession
     from curl_cffi.requests.errors import RequestsError
+    from curl_cffi.requests.impersonate import BrowserType
 except ImportError as exc:
     raise ImportError(
         "To import anything from this subpackage, you need to install the 'curl-impersonate' extra."
         "For example, if you use pip, run `pip install 'crawlee[curl-impersonate]'`.",
     ) from exc
 
+from curl_cffi.const import CurlHttpVersion
 from typing_extensions import override
 
 from crawlee._utils.blocked import ROTATE_PROXY_ERRORS
-from crawlee.errors import HttpStatusCodeError, ProxyError
+from crawlee.errors import ProxyError
 from crawlee.http_clients import BaseHttpClient, HttpCrawlingResult, HttpResponse
 
 if TYPE_CHECKING:
@@ -22,11 +24,11 @@ if TYPE_CHECKING:
 
     from curl_cffi.requests import Response
 
-    from crawlee.models import Request
+    from crawlee._types import HttpHeaders, HttpMethod
+    from crawlee.base_storage_client._models import Request
     from crawlee.proxy_configuration import ProxyInfo
     from crawlee.sessions import Session
     from crawlee.statistics import Statistics
-    from crawlee.types import HttpHeaders, HttpMethod
 
 
 class _CurlImpersonateResponse:
@@ -35,8 +37,24 @@ class _CurlImpersonateResponse:
     def __init__(self, response: Response) -> None:
         self._response = response
 
-    def read(self) -> bytes:
-        return self._response.content
+    @property
+    def http_version(self) -> str:
+        if self._response.http_version == CurlHttpVersion.NONE:
+            return 'NONE'
+        if self._response.http_version == CurlHttpVersion.V1_0:
+            return 'HTTP/1.0'
+        if self._response.http_version == CurlHttpVersion.V1_1:
+            return 'HTTP/1.1'
+        if self._response.http_version in {
+            CurlHttpVersion.V2_0,
+            CurlHttpVersion.V2TLS,
+            CurlHttpVersion.V2_PRIOR_KNOWLEDGE,
+        }:
+            return 'HTTP/2'
+        if self._response.http_version == CurlHttpVersion.V3:
+            return 'HTTP/3'
+
+        raise ValueError(f'Unknown HTTP version: {self._response.http_version}')
 
     @property
     def status_code(self) -> int:
@@ -46,12 +64,17 @@ class _CurlImpersonateResponse:
     def headers(self) -> dict[str, str]:
         return dict(self._response.headers.items())
 
+    def read(self) -> bytes:
+        return self._response.content
+
 
 class CurlImpersonateHttpClient(BaseHttpClient):
     """HTTP client based on the `curl-cffi` library.
 
     This client uses the `curl-cffi` library to perform HTTP requests in crawlers (`BasicCrawler` subclasses)
     and to manage sessions, proxies, and error handling.
+
+    See the `BaseHttpClient` class for more common information about HTTP clients.
     """
 
     def __init__(
@@ -70,9 +93,11 @@ class CurlImpersonateHttpClient(BaseHttpClient):
             ignore_http_error_status_codes: HTTP status codes to ignore as errors.
             async_session_kwargs: Additional keyword arguments for `curl_cffi.requests.AsyncSession`.
         """
-        self._persist_cookies_per_session = persist_cookies_per_session
-        self._additional_http_error_status_codes = set(additional_http_error_status_codes)
-        self._ignore_http_error_status_codes = set(ignore_http_error_status_codes)
+        super().__init__(
+            persist_cookies_per_session=persist_cookies_per_session,
+            additional_http_error_status_codes=additional_http_error_status_codes,
+            ignore_http_error_status_codes=ignore_http_error_status_codes,
+        )
         self._async_session_kwargs = async_session_kwargs
 
         self._client_by_proxy_url = dict[Optional[str], AsyncSession]()
@@ -90,9 +115,11 @@ class CurlImpersonateHttpClient(BaseHttpClient):
 
         try:
             response = await client.request(
-                method=request.method.upper(),  # curl-cffi requires uppercase method
                 url=request.url,
+                method=request.method.upper(),  # curl-cffi requires uppercase method
                 headers=request.headers,
+                params=request.query_params,
+                data=request.data,
                 cookies=session.cookies if session else None,
                 allow_redirects=True,
             )
@@ -104,16 +131,11 @@ class CurlImpersonateHttpClient(BaseHttpClient):
         if statistics:
             statistics.register_status_code(response.status_code)
 
-        exclude_error = response.status_code in self._ignore_http_error_status_codes
-        include_error = response.status_code in self._additional_http_error_status_codes
-
-        if include_error or (self._is_server_code(response.status_code) and not exclude_error):
-            if include_error:
-                raise HttpStatusCodeError(
-                    f'Status code {response.status_code} (user-configured to be an error) returned',
-                )
-
-            raise HttpStatusCodeError(f'Status code {response.status_code} returned')
+        self._raise_for_error_status_code(
+            response.status_code,
+            self._additional_http_error_status_codes,
+            self._ignore_http_error_status_codes,
+        )
 
         request.loaded_url = response.url
 
@@ -128,6 +150,8 @@ class CurlImpersonateHttpClient(BaseHttpClient):
         *,
         method: HttpMethod = 'GET',
         headers: HttpHeaders | None = None,
+        query_params: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
         session: Session | None = None,
         proxy_info: ProxyInfo | None = None,
     ) -> HttpResponse:
@@ -136,9 +160,11 @@ class CurlImpersonateHttpClient(BaseHttpClient):
 
         try:
             response = await client.request(
-                method=method.upper(),  # curl-cffi requires uppercase method
                 url=url,
+                method=method.upper(),  # curl-cffi requires uppercase method
                 headers=headers,
+                params=query_params,
+                data=data,
                 cookies=session.cookies if session else None,
                 allow_redirects=True,
             )
@@ -147,18 +173,35 @@ class CurlImpersonateHttpClient(BaseHttpClient):
                 raise ProxyError from exc
             raise
 
+        self._raise_for_error_status_code(
+            response.status_code,
+            self._additional_http_error_status_codes,
+            self._ignore_http_error_status_codes,
+        )
+
         return _CurlImpersonateResponse(response)
 
     def _get_client(self, proxy_url: str | None) -> AsyncSession:
         """Helper to get a HTTP client for the given proxy URL.
 
-        If the client for the given proxy URL doesn't exist, it will be created and stored.
+        The method checks if an `AsyncSession` already exists for the provided proxy URL. If no session exists,
+        it creates a new one, configured with the specified proxy and additional session options. The new session
+        is then stored for future use.
         """
+        # Check if a session for the given proxy URL has already been created.
         if proxy_url not in self._client_by_proxy_url:
-            self._client_by_proxy_url[proxy_url] = AsyncSession(
-                proxy=proxy_url,
-                **self._async_session_kwargs,
-            )
+            # Prepare a default kwargs for the new session. A provided proxy URL and a chrome for impersonation
+            # are set as default options.
+            kwargs: dict[str, Any] = {
+                'proxy': proxy_url,
+                'impersonate': BrowserType.chrome,
+            }
+
+            # Update the default kwargs with any additional user-provided kwargs.
+            kwargs.update(self._async_session_kwargs)
+
+            # Create and store the new session with the specified kwargs.
+            self._client_by_proxy_url[proxy_url] = AsyncSession(**kwargs)
 
         return self._client_by_proxy_url[proxy_url]
 

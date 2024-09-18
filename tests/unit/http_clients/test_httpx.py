@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import json
 import os
 from typing import TYPE_CHECKING
 
 import pytest
 
+from crawlee import Request
 from crawlee.errors import ProxyError
+from crawlee.fingerprint_suite._consts import COMMON_ACCEPT, COMMON_ACCEPT_LANGUAGE, USER_AGENT_POOL
 from crawlee.http_clients import HttpxHttpClient
-from crawlee.models import Request
 from crawlee.statistics import Statistics
 
 if TYPE_CHECKING:
@@ -17,6 +19,18 @@ if TYPE_CHECKING:
 @pytest.fixture
 def http_client() -> HttpxHttpClient:
     return HttpxHttpClient()
+
+
+async def test_http_1(httpbin: str) -> None:
+    http_client = HttpxHttpClient(http1=True, http2=False)
+    response = await http_client.send_request(httpbin)
+    assert response.http_version == 'HTTP/1.1'
+
+
+async def test_http_2(httpbin: str) -> None:
+    http_client = HttpxHttpClient(http2=True)
+    response = await http_client.send_request(httpbin)
+    assert response.http_version == 'HTTP/2'
 
 
 @pytest.mark.skipif(os.name == 'nt', reason='Skipped on Windows')
@@ -70,3 +84,22 @@ async def test_send_request_with_proxy_disabled(
 
     with pytest.raises(ProxyError):
         await http_client.send_request(url, proxy_info=disabled_proxy)
+
+
+async def test_common_headers() -> None:
+    client = HttpxHttpClient()
+
+    response = await client.send_request('https://httpbin.org/get')
+    response_dict = json.loads(response.read().decode())
+    response_headers = response_dict.get('headers', {})
+
+    assert 'Accept' in response_headers
+    assert response_headers['Accept'] == COMMON_ACCEPT
+
+    assert 'Accept-Language' in response_headers
+    assert response_headers['Accept-Language'] == COMMON_ACCEPT_LANGUAGE
+
+    # By default, HTTPX uses its own User-Agent, which should be replaced by the one from the header generator.
+    assert 'User-Agent' in response_headers
+    assert 'python-httpx' not in response_headers['User-Agent']
+    assert response_headers['User-Agent'] in USER_AGENT_POOL

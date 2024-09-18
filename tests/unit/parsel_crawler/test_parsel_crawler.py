@@ -8,8 +8,8 @@ import pytest
 import respx
 from httpx import Response
 
-from crawlee.autoscaling.autoscaled_pool import ConcurrencySettings
-from crawlee.models import BaseRequestData
+from crawlee import ConcurrencySettings
+from crawlee._request import BaseRequestData
 from crawlee.parsel_crawler import ParselCrawler
 from crawlee.storages import RequestList
 
@@ -69,6 +69,21 @@ async def server() -> AsyncGenerator[respx.MockRouter, None]:
                     <h3>Forbidden</h3>
                 </body>
             </html>""",
+        )
+
+        mock.get('/json', name='json_endpoint').return_value = Response(
+            200,
+            text="""{
+                "hello": "world"
+            }""",
+        )
+
+        mock.get('/xml', name='xml_endpoint').return_value = Response(
+            200,
+            text="""
+                <?xml version="1.0"?>
+                <hello>world</hello>
+            """,
         )
 
         generic_response = Response(
@@ -184,14 +199,21 @@ async def test_enqueue_links_with_max_crawl(server: respx.MockRouter) -> None:
 
 
 async def test_handle_blocked_request(server: respx.MockRouter) -> None:
-    crawler = ParselCrawler(request_provider=RequestList(['https://test.io/fdyr']), max_session_rotations=1)
+    crawler = ParselCrawler(
+        request_provider=RequestList(['https://test.io/fdyr']),
+        max_session_rotations=1,
+    )
+
     stats = await crawler.run()
     assert server['incapsula_endpoint'].called
     assert stats.requests_failed == 1
 
 
 async def test_handle_blocked_status_code(server: respx.MockRouter) -> None:
-    crawler = ParselCrawler(request_provider=RequestList(['https://test.io/blocked']), max_session_rotations=1)
+    crawler = ParselCrawler(
+        request_provider=RequestList(['https://test.io/blocked']),
+        max_session_rotations=1,
+    )
 
     # Patch internal calls and run crawler
     with mock.patch.object(
@@ -215,7 +237,7 @@ def test_import_error_handled() -> None:
     with mock.patch.dict('sys.modules', {'parsel': None}):
         # Invalidate ParselCrawler import
         sys.modules.pop('crawlee.parsel_crawler', None)
-        sys.modules.pop('crawlee.parsel_crawler.parsel_crawler', None)
+        sys.modules.pop('crawlee.parsel_crawler._parsel_crawler', None)
 
         with pytest.raises(ImportError) as import_error:
             from crawlee.parsel_crawler import ParselCrawler  # noqa: F401
@@ -225,3 +247,37 @@ def test_import_error_handled() -> None:
         "To import anything from this subpackage, you need to install the 'parsel' extra."
         "For example, if you use pip, run `pip install 'crawlee[parsel]'`."
     )
+
+
+async def test_json(server: respx.MockRouter) -> None:
+    crawler = ParselCrawler(request_provider=RequestList(['https://test.io/json']))
+    handler = mock.AsyncMock()
+
+    @crawler.router.default_handler
+    async def request_handler(context: ParselCrawlingContext) -> None:
+        result = context.selector.jmespath('hello').getall()
+        await handler(result)
+
+    await crawler.run()
+
+    assert server['json_endpoint'].called
+    assert handler.called
+
+    assert handler.call_args[0][0] == ['world']
+
+
+async def test_xml(server: respx.MockRouter) -> None:
+    crawler = ParselCrawler(request_provider=RequestList(['https://test.io/xml']))
+    handler = mock.AsyncMock()
+
+    @crawler.router.default_handler
+    async def request_handler(context: ParselCrawlingContext) -> None:
+        result = context.selector.css('hello').getall()
+        await handler(result)
+
+    await crawler.run()
+
+    assert server['xml_endpoint'].called
+    assert handler.called
+
+    assert handler.call_args[0][0] == ['<hello>world</hello>']

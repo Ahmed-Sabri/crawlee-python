@@ -2,17 +2,71 @@
 
 All notable changes to this project will be documented in this file.
 
-## 0.2.2 - **not yet released**
+## 0.3.6 - **not yet released**
+
+### 🚀 Features
+
+- Add HTTP/2 support for HTTPX client ([#513](https://github.com/apify/crawlee-python/pull/513), closes [#512](https://github.com/apify/crawlee-python/issues/512)) ([0eb0a33](https://github.com/apify/crawlee-python/commit/0eb0a33411096011198e52c393f35730f1a0b6ac)) by [@vdusek](https://github.com/vdusek)
+- Expose extended unique key when creating a new Request ([#515](https://github.com/apify/crawlee-python/pull/515)) ([1807f41](https://github.com/apify/crawlee-python/commit/1807f419e47a815dd706d09acb0f3b3af8cfc691)) by [@vdusek](https://github.com/vdusek)
+- Add header generator and integrate it into HTTPX client ([#530](https://github.com/apify/crawlee-python/pull/530), closes [#402](https://github.com/apify/crawlee-python/issues/402)) ([b63f9f9](https://github.com/apify/crawlee-python/commit/b63f9f98c6613e095546ef544eab271d433e3379)) by [@vdusek](https://github.com/vdusek)
+
+## [0.3.5](https://github.com/apify/crawlee-python/releases/tag/v0.3.5) (2024-09-10)
+
+### 🚀 Features
+
+- Memory usage limit configuration via environment variables ([#502](https://github.com/apify/crawlee-python/pull/502)) ([c62e554](https://github.com/apify/crawlee-python/commit/c62e5545de6a1836f0514ebd3dd695e4fd856844)) by [@janbuchar](https://github.com/janbuchar)
+
+### 🐛 Bug Fixes
+
+- Http clients detect 4xx as errors by default ([#498](https://github.com/apify/crawlee-python/pull/498), closes [#496](https://github.com/apify/crawlee-python/issues/496)) ([1895dca](https://github.com/apify/crawlee-python/commit/1895dca538f415feca37b4a030525c7c0d32f114)) by [@vdusek](https://github.com/vdusek)
+- Correctly handle log level configuration ([#508](https://github.com/apify/crawlee-python/pull/508)) ([7ea8fe6](https://github.com/apify/crawlee-python/commit/7ea8fe69f4a6146a1e417bebff60c08a85e2ca27)) by [@janbuchar](https://github.com/janbuchar)
+
+## [0.3.4](https://github.com/apify/crawlee-python/releases/tag/v0.3.4) (2024-09-05)
+
+### 🐛 Bug Fixes
+
+- Expose basic crawling context ([#501](https://github.com/apify/crawlee-python/pull/501)) ([b484535](https://github.com/apify/crawlee-python/commit/b484535dbacc5d206a026f55a1d3e58edd375e91)) by [@vdusek](https://github.com/vdusek)
+
+## [0.3.3](https://github.com/apify/crawlee-python/releases/tag/v0.3.3) (2024-09-05)
+
+### 🐛 Bug Fixes
+
+- Deduplicate requests by unique key before submitting them to the queue ([#499](https://github.com/apify/crawlee-python/pull/499)) ([6a3e0e7](https://github.com/apify/crawlee-python/commit/6a3e0e78490851c43cefb0497ce34ca52a31a25c)) by [@janbuchar](https://github.com/janbuchar)
+
+## [0.3.2](https://github.com/apify/crawlee-python/releases/tag/v0.3.2) (2024-09-02)
+
+### 🐛 Bug Fixes
+
+- Double incrementation of `item_count` ([#443](https://github.com/apify/crawlee-python/pull/443), closes [#442](https://github.com/apify/crawlee-python/issues/442)) ([cd9adf1](https://github.com/apify/crawlee-python/commit/cd9adf15731e8c4a39cb142b6d1a62909cafdc51)) by [@cadlagtrader](https://github.com/cadlagtrader)
+- Field alias in `BatchRequestsOperationResponse` ([#485](https://github.com/apify/crawlee-python/pull/485)) ([126a862](https://github.com/apify/crawlee-python/commit/126a8629cb5b989a0f9fe22156fb09731a34acd2)) by [@janbuchar](https://github.com/janbuchar)
+- JSON handling with Parsel ([#490](https://github.com/apify/crawlee-python/pull/490), closes [#488](https://github.com/apify/crawlee-python/issues/488)) ([ebf5755](https://github.com/apify/crawlee-python/commit/ebf575539ffb631ae131a1b801cec8f21dd0cf4c)) by [@janbuchar](https://github.com/janbuchar)
+
+## [0.3.1](https://github.com/apify/crawlee-python/releases/tag/v0.3.1) (2024-08-30)
+
+### 🚀 Features
+
+- Curl http client selects chrome impersonation by default ([#473](https://github.com/apify/crawlee-python/pull/473)) ([82dc939](https://github.com/apify/crawlee-python/commit/82dc93957b1a380ea975564dea5c6ba4639be548)) by [@vdusek](https://github.com/vdusek)
+
+## [0.3.0](https://github.com/apify/crawlee-python/releases/tag/v0.3.0) (2024-08-27)
 
 ### 🚀 Features
 
 - Implement ParselCrawler that adds support for Parsel ([#348](https://github.com/apify/crawlee-python/pull/348), closes [#335](https://github.com/apify/crawlee-python/issues/335)) ([a3832e5](https://github.com/apify/crawlee-python/commit/a3832e527f022f32cce4a80055da3b7967b74522)) by [@asymness](https://github.com/asymness)
+- Add support for filling a web form ([#453](https://github.com/apify/crawlee-python/pull/453), closes [#305](https://github.com/apify/crawlee-python/issues/305)) ([5a125b4](https://github.com/apify/crawlee-python/commit/5a125b464b2619000b92dacad4c3a7faa1869f29)) by [@vdusek](https://github.com/vdusek)
 
 ### 🐛 Bug Fixes
 
 - Remove indentation from statistics logging and print the data in tables ([#322](https://github.com/apify/crawlee-python/pull/322), closes [#306](https://github.com/apify/crawlee-python/issues/306)) ([359b515](https://github.com/apify/crawlee-python/commit/359b515d647f064886f91441c2c01d3099e21035)) by [@TymeeK](https://github.com/TymeeK)
 - Remove redundant log, fix format ([#408](https://github.com/apify/crawlee-python/pull/408)) ([8d27e39](https://github.com/apify/crawlee-python/commit/8d27e3928c605d6eceb51a948453a15024fa2aa2)) by [@janbuchar](https://github.com/janbuchar)
 - Dequeue items from RequestQueue in the correct order ([#411](https://github.com/apify/crawlee-python/pull/411)) ([96fc33e](https://github.com/apify/crawlee-python/commit/96fc33e2cc4631cae3c50dad9eace6407103a2a9)) by [@janbuchar](https://github.com/janbuchar)
+- Relative URLS supports & If not a URL, pass #417 ([#431](https://github.com/apify/crawlee-python/pull/431), closes [#417](https://github.com/apify/crawlee-python/issues/417)) ([ccd8145](https://github.com/apify/crawlee-python/commit/ccd81454166ece68391cdffedb8efe9e663361d9)) by [@black7375](https://github.com/black7375)
+- Typo in ProlongRequestLockResponse ([#458](https://github.com/apify/crawlee-python/pull/458)) ([30ccc3a](https://github.com/apify/crawlee-python/commit/30ccc3a4763bc3706a3bbeaedc95f9648f5ba09a)) by [@janbuchar](https://github.com/janbuchar)
+- Add missing __all__ to top-level __init__.py file ([#463](https://github.com/apify/crawlee-python/pull/463)) ([353a1ce](https://github.com/apify/crawlee-python/commit/353a1ce28cd38c97ffb36dc1e6b0e86d3aef1a48)) by [@janbuchar](https://github.com/janbuchar)
+
+### Refactor
+
+- [**breaking**] RequestQueue and service management rehaul ([#429](https://github.com/apify/crawlee-python/pull/429), closes [#83](https://github.com/apify/crawlee-python/issues/83), [#174](https://github.com/apify/crawlee-python/issues/174), [#203](https://github.com/apify/crawlee-python/issues/203), [#423](https://github.com/apify/crawlee-python/issues/423)) ([b155a9f](https://github.com/apify/crawlee-python/commit/b155a9f602a163e891777bef5608072fb5d0156f)) by [@janbuchar](https://github.com/janbuchar)
+- [**breaking**] Declare private and public interface ([#456](https://github.com/apify/crawlee-python/pull/456)) ([d6738df](https://github.com/apify/crawlee-python/commit/d6738df30586934e8d1aba50b9cd437a0ea40400)) by [@vdusek](https://github.com/vdusek)
 
 ## [0.2.1](https://github.com/apify/crawlee-python/releases/tag/v0.2.1) (2024-08-05)
 

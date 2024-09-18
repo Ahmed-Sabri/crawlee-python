@@ -10,10 +10,10 @@ from decimal import Decimal
 from logging import getLogger
 from typing import TYPE_CHECKING
 
+from crawlee._consts import METADATA_FILENAME
 from crawlee._utils.data_processing import maybe_parse_body
 from crawlee._utils.file import json_dumps
-from crawlee.consts import METADATA_FILENAME
-from crawlee.models import (
+from crawlee.base_storage_client._models import (
     DatasetMetadata,
     KeyValueStoreMetadata,
     KeyValueStoreRecord,
@@ -21,15 +21,15 @@ from crawlee.models import (
     Request,
     RequestQueueMetadata,
 )
-from crawlee.storages.dataset import Dataset
-from crawlee.storages.key_value_store import KeyValueStore
-from crawlee.storages.request_queue import RequestQueue
+from crawlee.storages._dataset import Dataset
+from crawlee.storages._key_value_store import KeyValueStore
+from crawlee.storages._request_queue import RequestQueue
 
 if TYPE_CHECKING:
-    from crawlee.memory_storage_client.dataset_client import DatasetClient
-    from crawlee.memory_storage_client.key_value_store_client import KeyValueStoreClient
-    from crawlee.memory_storage_client.memory_storage_client import MemoryStorageClient, TResourceClient
-    from crawlee.memory_storage_client.request_queue_client import RequestQueueClient
+    from crawlee.memory_storage_client._dataset_client import DatasetClient
+    from crawlee.memory_storage_client._key_value_store_client import KeyValueStoreClient
+    from crawlee.memory_storage_client._memory_storage_client import MemoryStorageClient, TResourceClient
+    from crawlee.memory_storage_client._request_queue_client import RequestQueueClient
 
 logger = getLogger(__name__)
 
@@ -90,9 +90,9 @@ def find_or_create_client_by_id_or_name_inner(
     Returns:
         The found or created storage client, or None if no client could be found or created.
     """
-    from crawlee.memory_storage_client.dataset_client import DatasetClient
-    from crawlee.memory_storage_client.key_value_store_client import KeyValueStoreClient
-    from crawlee.memory_storage_client.request_queue_client import RequestQueueClient
+    from crawlee.memory_storage_client._dataset_client import DatasetClient
+    from crawlee.memory_storage_client._key_value_store_client import KeyValueStoreClient
+    from crawlee.memory_storage_client._request_queue_client import RequestQueueClient
 
     if id is None and name is None:
         raise ValueError('Either id or name must be specified.')
@@ -178,9 +178,10 @@ def create_dataset_from_directory(
     id: str | None = None,
     name: str | None = None,
 ) -> DatasetClient:
-    from crawlee.memory_storage_client.dataset_client import DatasetClient
+    from crawlee.memory_storage_client._dataset_client import DatasetClient
 
     item_count = 0
+    has_seen_metadata_file = False
     created_at = datetime.now(timezone.utc)
     accessed_at = datetime.now(timezone.utc)
     modified_at = datetime.now(timezone.utc)
@@ -189,6 +190,7 @@ def create_dataset_from_directory(
     metadata_filepath = os.path.join(storage_directory, METADATA_FILENAME)
 
     if os.path.exists(metadata_filepath):
+        has_seen_metadata_file = True
         with open(metadata_filepath, encoding='utf-8') as f:
             json_content = json.load(f)
             resource_info = DatasetMetadata(**json_content)
@@ -202,7 +204,6 @@ def create_dataset_from_directory(
 
     # Load dataset entries
     entries: dict[str, dict] = {}
-    has_seen_metadata_file = False
 
     for entry in os.scandir(storage_directory):
         if entry.is_file():
@@ -240,7 +241,7 @@ def create_kvs_from_directory(
     id: str | None = None,
     name: str | None = None,
 ) -> KeyValueStoreClient:
-    from crawlee.memory_storage_client.key_value_store_client import KeyValueStoreClient
+    from crawlee.memory_storage_client._key_value_store_client import KeyValueStoreClient
 
     created_at = datetime.now(timezone.utc)
     accessed_at = datetime.now(timezone.utc)
@@ -335,7 +336,7 @@ def create_rq_from_directory(
     id: str | None = None,
     name: str | None = None,
 ) -> RequestQueueClient:
-    from crawlee.memory_storage_client.request_queue_client import RequestQueueClient
+    from crawlee.memory_storage_client._request_queue_client import RequestQueueClient
 
     created_at = datetime.now(timezone.utc)
     accessed_at = datetime.now(timezone.utc)
@@ -399,9 +400,9 @@ def _determine_storage_path(
     id: str | None = None,
     name: str | None = None,
 ) -> str | None:
-    from crawlee.memory_storage_client.dataset_client import DatasetClient
-    from crawlee.memory_storage_client.key_value_store_client import KeyValueStoreClient
-    from crawlee.memory_storage_client.request_queue_client import RequestQueueClient
+    from crawlee.memory_storage_client._dataset_client import DatasetClient
+    from crawlee.memory_storage_client._key_value_store_client import KeyValueStoreClient
+    from crawlee.memory_storage_client._request_queue_client import RequestQueueClient
     from crawlee.storages._creation_management import _get_default_storage_id
 
     configuration = memory_storage_client._configuration  # noqa: SLF001
