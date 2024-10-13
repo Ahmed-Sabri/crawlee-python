@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-from collections.abc import Coroutine, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Literal, Protocol, Union
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Protocol, TypeVar, Union
 
+from pydantic import ConfigDict, Field, PlainValidator, RootModel
 from typing_extensions import NotRequired, TypeAlias, TypedDict, Unpack
 
 if TYPE_CHECKING:
     import logging
     import re
+    from collections.abc import Coroutine, Sequence
 
     from crawlee import Glob
     from crawlee._request import BaseRequestData, Request
@@ -19,12 +21,70 @@ if TYPE_CHECKING:
     from crawlee.sessions._session import Session
     from crawlee.storages._dataset import ExportToKwargs, GetDataKwargs, PushDataKwargs
 
-# Type for representing json-serializable values. It's close enough to the real thing supported
-# by json.parse, and the best we can do until mypy supports recursive types. It was suggested
-# in a discussion with (and approved by) Guido van Rossum, so I'd consider it correct enough.
-JsonSerializable: TypeAlias = Union[str, int, float, bool, None, dict[str, Any], list[Any]]
+    # Workaround for https://github.com/pydantic/pydantic/issues/9445
+    J = TypeVar('J', bound='JsonSerializable')
+    JsonSerializable: TypeAlias = Union[
+        list[J],
+        dict[str, J],
+        str,
+        bool,
+        int,
+        float,
+        None,
+    ]
+else:
+    from pydantic import JsonValue as JsonSerializable
+
 
 HttpMethod: TypeAlias = Literal['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'CONNECT', 'OPTIONS', 'TRACE', 'PATCH']
+
+HttpQueryParams: TypeAlias = dict[str, str]
+
+HttpPayload: TypeAlias = Union[str, bytes]
+
+
+def _normalize_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    """Converts all header keys to lowercase and returns them sorted by key."""
+    normalized_headers = {k.lower(): v for k, v in headers.items()}
+    sorted_headers = sorted(normalized_headers.items())
+    return dict(sorted_headers)
+
+
+class HttpHeaders(RootModel, Mapping[str, str]):
+    """A dictionary-like object representing HTTP headers."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    root: Annotated[
+        dict[str, str],
+        PlainValidator(lambda value: _normalize_headers(value)),
+        Field(default_factory=dict),
+    ] = {}  # noqa: RUF012
+
+    def __getitem__(self, key: str) -> str:
+        return self.root[key.lower()]
+
+    def __setitem__(self, key: str, value: str) -> None:
+        raise TypeError(f'{self.__class__.__name__} is immutable')
+
+    def __delitem__(self, key: str) -> None:
+        raise TypeError(f'{self.__class__.__name__} is immutable')
+
+    def __or__(self, other: HttpHeaders) -> HttpHeaders:
+        """Return a new instance of `HttpHeaders` combining this one with another one."""
+        combined_headers = {**self.root, **other}
+        return HttpHeaders(combined_headers)
+
+    def __ror__(self, other: HttpHeaders) -> HttpHeaders:
+        """Support reversed | operation (other | self)."""
+        combined_headers = {**other, **self.root}
+        return HttpHeaders(combined_headers)
+
+    def __iter__(self) -> Iterator[str]:  # type: ignore
+        yield from self.root
+
+    def __len__(self) -> int:
+        return len(self.root)
 
 
 class EnqueueStrategy(str, Enum):
@@ -217,42 +277,3 @@ class RequestHandlerRunResult:
     ) -> None:
         """Track a call to the `add_requests` context helper."""
         self.add_requests_calls.append(AddRequestsFunctionCall(requests=requests, **kwargs))
-
-
-class HttpHeaders(Mapping[str, str]):
-    """An immutable mapping for HTTP headers that ensures case-insensitivity for header names."""
-
-    def __init__(self, headers: Mapping[str, str] | None = None) -> None:
-        """Create a new instance.
-
-        Args:
-            headers: A mapping of header names to values.
-        """
-        # Ensure immutability by sorting and fixing the order.
-        headers = headers or {}
-        headers = {k.lower(): v for k, v in headers.items()}
-        self._headers = dict(sorted(headers.items()))
-
-    def __getitem__(self, key: str) -> str:
-        """Get the value of a header by its name, case-insensitive."""
-        return self._headers[key.lower()]
-
-    def __iter__(self) -> Iterator[str]:
-        """Return an iterator over the header names."""
-        return iter(self._headers)
-
-    def __len__(self) -> int:
-        """Return the number of headers."""
-        return len(self._headers)
-
-    def __repr__(self) -> str:
-        """Return a string representation of the object."""
-        return f'{self.__class__.__name__}({self._headers})'
-
-    def __setitem__(self, key: str, value: str) -> None:
-        """Prevent setting a header, as the object is immutable."""
-        raise TypeError(f'{self.__class__.__name__} is immutable')
-
-    def __delitem__(self, key: str) -> None:
-        """Prevent deleting a header, as the object is immutable."""
-        raise TypeError(f'{self.__class__.__name__} is immutable')

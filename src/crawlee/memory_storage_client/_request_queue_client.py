@@ -477,7 +477,7 @@ class RequestQueueClient(BaseRequestQueueClient):
 
         # Write the request to the file
         file_path = os.path.join(entity_directory, f'{request.id}.json')
-        f = await asyncio.to_thread(open, file_path, mode='w')
+        f = await asyncio.to_thread(open, file_path, mode='w', encoding='utf-8')
         try:
             s = await json_dumps(request.model_dump())
             await asyncio.to_thread(f.write, s)
@@ -504,9 +504,12 @@ class RequestQueueClient(BaseRequestQueueClient):
     def _json_to_request(self, request_json: str | None) -> Request | None:
         if request_json is None:
             return None
+
         request_dict = filter_out_none_values_recursively(json.loads(request_json))
+
         if request_dict is None:
             return None
+
         return Request.model_validate(request_dict)
 
     async def _create_internal_request(self, request: Request, forefront: bool | None) -> Request:
@@ -525,7 +528,6 @@ class RequestQueueClient(BaseRequestQueueClient):
             retry_count=request.retry_count,
             order_no=order_no,
             json_=json_request,
-            user_data={},
         )
 
     def _calculate_order_no(self, request: Request, forefront: bool | None) -> Decimal | None:

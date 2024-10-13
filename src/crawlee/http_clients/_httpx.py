@@ -16,7 +16,7 @@ from crawlee.sessions import Session
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from crawlee._types import HttpMethod
+    from crawlee._types import HttpMethod, HttpQueryParams
     from crawlee.base_storage_client._models import Request
     from crawlee.proxy_configuration import ProxyInfo
     from crawlee.statistics import Statistics
@@ -39,8 +39,8 @@ class _HttpxResponse:
         return self._response.status_code
 
     @property
-    def headers(self) -> dict[str, str]:
-        return dict(self._response.headers.items())
+    def headers(self) -> HttpHeaders:
+        return HttpHeaders(dict(self._response.headers))
 
     def read(self) -> bytes:
         return self._response.read()
@@ -125,7 +125,7 @@ class HttpxHttpClient(BaseHttpClient):
         statistics: Statistics | None = None,
     ) -> HttpCrawlingResult:
         client = self._get_client(proxy_info.url if proxy_info else None)
-        headers = self._combine_headers(HttpHeaders(request.headers))
+        headers = self._combine_headers(request.headers)
 
         http_request = client.build_request(
             url=request.url,
@@ -166,7 +166,7 @@ class HttpxHttpClient(BaseHttpClient):
         *,
         method: HttpMethod = 'GET',
         headers: HttpHeaders | None = None,
-        query_params: dict[str, Any] | None = None,
+        query_params: HttpQueryParams | None = None,
         data: dict[str, Any] | None = None,
         session: Session | None = None,
         proxy_info: ProxyInfo | None = None,
@@ -177,7 +177,7 @@ class HttpxHttpClient(BaseHttpClient):
         http_request = client.build_request(
             url=url,
             method=method,
-            headers=headers,
+            headers=dict(headers) if headers else None,
             params=query_params,
             data=data,
             extensions={'crawlee_session': session if self._persist_cookies_per_session else None},
@@ -226,12 +226,12 @@ class HttpxHttpClient(BaseHttpClient):
 
     def _combine_headers(self, explicit_headers: HttpHeaders | None) -> HttpHeaders | None:
         """Helper to get the headers for a HTTP request."""
-        common_headers = self._header_generator.get_common_headers() if self._header_generator else {}
-        headers = HttpHeaders(common_headers)
-
-        if explicit_headers:
-            headers = HttpHeaders({**headers, **explicit_headers})
-
+        common_headers = self._header_generator.get_common_headers() if self._header_generator else HttpHeaders()
+        user_agent_header = (
+            self._header_generator.get_random_user_agent_header() if self._header_generator else HttpHeaders()
+        )
+        explicit_headers = explicit_headers or HttpHeaders()
+        headers = common_headers | user_agent_header | explicit_headers
         return headers if headers else None
 
     @staticmethod

@@ -2,13 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
-## 0.3.6 - **not yet released**
+## 0.3.9 - **not yet released**
+
+### 🐛 Bug Fixes
+
+- Workaround for JSON value typing problems ([#581](https://github.com/apify/crawlee-python/pull/581), closes [#563](https://github.com/apify/crawlee-python/issues/563)) ([403496a](https://github.com/apify/crawlee-python/commit/403496a53c12810351139a6e073238143ecc5930)) by [@janbuchar](https://github.com/janbuchar)
+
+## [0.3.8](https://github.com/apify/crawlee-python/releases/tag/v0.3.8) (2024-10-02)
+
+### 🚀 Features
+
+- Mask Playwright's "headless" headers ([#545](https://github.com/apify/crawlee-python/pull/545), closes [#401](https://github.com/apify/crawlee-python/issues/401)) ([d1445e4](https://github.com/apify/crawlee-python/commit/d1445e4858fd804bb4a2e35efa1d2f5254d8df6b)) by [@vdusek](https://github.com/vdusek)
+- Add new model for `HttpHeaders` ([#544](https://github.com/apify/crawlee-python/pull/544)) ([854f2c1](https://github.com/apify/crawlee-python/commit/854f2c1e2e09cf398e04b1e153534282add1247e)) by [@vdusek](https://github.com/vdusek)
+
+### 🐛 Bug Fixes
+
+- Call `error_handler` for `SessionError` ([#557](https://github.com/apify/crawlee-python/pull/557), closes [#546](https://github.com/apify/crawlee-python/issues/546)) ([e75ac4b](https://github.com/apify/crawlee-python/commit/e75ac4b70cd48a4ca9f8245cea3c5f3c188b8824)) by [@vdusek](https://github.com/vdusek)
+- Extend from `StrEnum` in `RequestState` to fix serialization ([#556](https://github.com/apify/crawlee-python/pull/556), closes [#551](https://github.com/apify/crawlee-python/issues/551)) ([6bf35ba](https://github.com/apify/crawlee-python/commit/6bf35ba4a6913819706ebd1d2c1156a4c62f944e)) by [@vdusek](https://github.com/vdusek)
+- Add equality check to UserData model ([#562](https://github.com/apify/crawlee-python/pull/562)) ([899a25c](https://github.com/apify/crawlee-python/commit/899a25ca63f570b3c4d8d56c85a838b371fd3924)) by [@janbuchar](https://github.com/janbuchar)
+
+## [0.3.7](https://github.com/apify/crawlee-python/releases/tag/v0.3.7) (2024-09-25)
+
+### 🐛 Bug Fixes
+
+- Improve `Request.user_data` serialization ([#540](https://github.com/apify/crawlee-python/pull/540), closes [#524](https://github.com/apify/crawlee-python/issues/524)) ([de29c0e](https://github.com/apify/crawlee-python/commit/de29c0e6b737a9d2544c5382472618dde76eb2a5)) by [@janbuchar](https://github.com/janbuchar)
+- Adopt new version of curl-cffi ([#543](https://github.com/apify/crawlee-python/pull/543)) ([f6fcf48](https://github.com/apify/crawlee-python/commit/f6fcf48d99bfcb4b8e75c5c9c38dc8c265164a10)) by [@vdusek](https://github.com/vdusek)
+
+## [0.3.6](https://github.com/apify/crawlee-python/releases/tag/v0.3.6) (2024-09-19)
 
 ### 🚀 Features
 
 - Add HTTP/2 support for HTTPX client ([#513](https://github.com/apify/crawlee-python/pull/513), closes [#512](https://github.com/apify/crawlee-python/issues/512)) ([0eb0a33](https://github.com/apify/crawlee-python/commit/0eb0a33411096011198e52c393f35730f1a0b6ac)) by [@vdusek](https://github.com/vdusek)
 - Expose extended unique key when creating a new Request ([#515](https://github.com/apify/crawlee-python/pull/515)) ([1807f41](https://github.com/apify/crawlee-python/commit/1807f419e47a815dd706d09acb0f3b3af8cfc691)) by [@vdusek](https://github.com/vdusek)
 - Add header generator and integrate it into HTTPX client ([#530](https://github.com/apify/crawlee-python/pull/530), closes [#402](https://github.com/apify/crawlee-python/issues/402)) ([b63f9f9](https://github.com/apify/crawlee-python/commit/b63f9f98c6613e095546ef544eab271d433e3379)) by [@vdusek](https://github.com/vdusek)
+
+### 🐛 Bug Fixes
+
+- Use explicitly UTF-8 encoding in local storage ([#533](https://github.com/apify/crawlee-python/pull/533), closes [#532](https://github.com/apify/crawlee-python/issues/532)) ([a3a0ab2](https://github.com/apify/crawlee-python/commit/a3a0ab2f6809b7a06319a77dfbf289df78638dea)) by [@vdusek](https://github.com/vdusek)
 
 ## [0.3.5](https://github.com/apify/crawlee-python/releases/tag/v0.3.5) (2024-09-10)
 

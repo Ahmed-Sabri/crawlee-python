@@ -2,20 +2,29 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator, MutableMapping
 from datetime import datetime
 from decimal import Decimal
-from enum import Enum
-from typing import Annotated, Any
+from enum import IntEnum
+from typing import Annotated, Any, cast
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    PlainValidator,
+    TypeAdapter,
+)
 from typing_extensions import Self
 
-from crawlee._types import EnqueueStrategy, HttpMethod
+from crawlee._types import EnqueueStrategy, HttpHeaders, HttpMethod, HttpPayload, HttpQueryParams, JsonSerializable
 from crawlee._utils.requests import compute_unique_key, unique_key_to_request_id
 from crawlee._utils.urls import extract_query_params, validate_http_url
 
 
-class RequestState(Enum):
+class RequestState(IntEnum):
     """Crawlee-specific request handling state."""
 
     UNPROCESSED = 0
@@ -26,6 +35,73 @@ class RequestState(Enum):
     ERROR_HANDLER = 5
     ERROR = 6
     SKIPPED = 7
+
+
+class CrawleeRequestData(BaseModel):
+    """Crawlee-specific configuration stored in the `user_data`."""
+
+    max_retries: Annotated[int | None, Field(alias='maxRetries')] = None
+    """Maximum number of retries for this request. Allows to override the global `max_request_retries` option of
+    `BasicCrawler`."""
+
+    enqueue_strategy: Annotated[str | None, Field(alias='enqueueStrategy')] = None
+
+    state: RequestState | None = None
+    """Describes the request's current lifecycle state."""
+
+    session_rotation_count: Annotated[int | None, Field(alias='sessionRotationCount')] = None
+
+    skip_navigation: Annotated[bool, Field(alias='skipNavigation')] = False
+
+    last_proxy_tier: Annotated[int | None, Field(alias='lastProxyTier')] = None
+
+    forefront: Annotated[bool, Field()] = False
+
+
+class UserData(BaseModel, MutableMapping[str, JsonSerializable]):
+    """Represents the `user_data` part of a Request.
+
+    Apart from the well-known attributes (`label` and `__crawlee`), it can also contain arbitrary JSON-compatible
+    values.
+    """
+
+    model_config = ConfigDict(extra='allow')
+    __pydantic_extra__: dict[str, JsonSerializable] = Field(init=False)  # pyright: ignore
+
+    crawlee_data: Annotated[CrawleeRequestData | None, Field(alias='__crawlee')] = None
+    label: Annotated[str | None, Field()] = None
+
+    def __getitem__(self, key: str) -> JsonSerializable:
+        return self.__pydantic_extra__[key]
+
+    def __setitem__(self, key: str, value: JsonSerializable) -> None:
+        if key == 'label':
+            if value is not None and not isinstance(value, str):
+                raise ValueError('`label` must be str or None')
+
+            self.label = value
+        self.__pydantic_extra__[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        del self.__pydantic_extra__[key]
+
+    def __iter__(self) -> Iterator[str]:  # type: ignore
+        yield from self.__pydantic_extra__
+
+    def __len__(self) -> int:
+        return len(self.__pydantic_extra__)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, BaseModel):
+            return super().__eq__(other)
+
+        if isinstance(other, dict):
+            return self.model_dump() == other
+
+        return NotImplemented
+
+
+user_data_adapter = TypeAdapter(UserData)
 
 
 class BaseRequestData(BaseModel):
@@ -49,16 +125,32 @@ class BaseRequestData(BaseModel):
     """
 
     method: HttpMethod = 'GET'
+    """HTTP request method."""
 
-    payload: str | None = None
+    headers: Annotated[HttpHeaders, Field(default_factory=HttpHeaders())] = HttpHeaders()
+    """HTTP request headers."""
 
-    headers: Annotated[dict[str, str] | None, Field(default_factory=dict)] = None
+    query_params: Annotated[HttpQueryParams, Field(alias='queryParams', default_factory=dict)] = {}
+    """URL query parameters."""
 
-    query_params: Annotated[dict[str, Any] | None, Field(default_factory=dict)] = None
+    payload: HttpPayload | None = None
 
-    data: Annotated[dict[str, Any] | None, Field(default_factory=dict)] = None
+    data: Annotated[dict[str, Any], Field(default_factory=dict)] = {}
 
-    user_data: Annotated[dict[str, Any], Field(alias='userData', default_factory=dict)]
+    user_data: Annotated[
+        dict[str, JsonSerializable],  # Internally, the model contains `UserData`, this is just for convenience
+        Field(alias='userData', default_factory=lambda: UserData()),
+        PlainValidator(user_data_adapter.validate_python),
+        PlainSerializer(
+            lambda instance: user_data_adapter.dump_python(
+                instance,
+                by_alias=True,
+                exclude_none=True,
+                exclude_unset=True,
+                exclude_defaults=True,
+            )
+        ),
+    ] = {}
     """Custom user data assigned to the request. Use this to save any request related data to the
     request's scope, keeping them accessible on retries, failures etc.
     """
@@ -77,7 +169,7 @@ class BaseRequestData(BaseModel):
         url: str,
         *,
         method: HttpMethod = 'GET',
-        payload: str | None = None,
+        payload: HttpPayload | None = None,
         label: str | None = None,
         unique_key: str | None = None,
         id: str | None = None,
@@ -118,7 +210,24 @@ class BaseRequestData(BaseModel):
 
 
 class Request(BaseRequestData):
-    """A crawling request (as returned from a request queue)."""
+    """Represents a request in the Crawlee framework, containing the necessary information for crawling operations.
+
+    The `Request` class is one of the core components in Crawlee, utilized by various components such as request
+    providers, HTTP clients, crawlers, and more. It encapsulates the essential data for executing web requests,
+    including the URL, HTTP method, headers, payload, and user data. The user data allows custom information
+    to be stored and persisted throughout the request lifecycle, including its retries.
+
+    Key functionalities include managing the request's identifier (`id`), unique key (`unique_key`) that is used
+    for request deduplication, controlling retries, handling state management, and enabling configuration for session
+    rotation and proxy handling.
+
+    The recommended way to create a new instance is by using the `Request.from_url` constructor, which automatically
+    generates a unique key and identifier based on the URL and request parameters.
+
+    ```python
+    request = Request.from_url('https://crawlee.dev')
+    ```
+    """
 
     id: str
 
@@ -134,7 +243,7 @@ class Request(BaseRequestData):
         url: str,
         *,
         method: HttpMethod = 'GET',
-        payload: str | None = None,
+        payload: HttpPayload | None = None,
         label: str | None = None,
         unique_key: str | None = None,
         id: str | None = None,
@@ -199,14 +308,16 @@ class Request(BaseRequestData):
     @property
     def label(self) -> str | None:
         """A string used to differentiate between arbitrary request types."""
-        if 'label' in self.user_data:
-            return str(self.user_data['label'])
-        return None
+        return cast(UserData, self.user_data).label
 
     @property
     def crawlee_data(self) -> CrawleeRequestData:
         """Crawlee-specific configuration stored in the user_data."""
-        return CrawleeRequestData.model_validate(self.user_data.get('__crawlee', {}))
+        user_data = cast(UserData, self.user_data)
+        if user_data.crawlee_data is None:
+            user_data.crawlee_data = CrawleeRequestData()
+
+        return user_data.crawlee_data
 
     @property
     def state(self) -> RequestState | None:
@@ -215,8 +326,7 @@ class Request(BaseRequestData):
 
     @state.setter
     def state(self, new_state: RequestState) -> None:
-        self.user_data.setdefault('__crawlee', {})
-        self.user_data['__crawlee']['state'] = new_state
+        self.crawlee_data.state = new_state
 
     @property
     def max_retries(self) -> int | None:
@@ -225,8 +335,7 @@ class Request(BaseRequestData):
 
     @max_retries.setter
     def max_retries(self, new_max_retries: int) -> None:
-        self.user_data.setdefault('__crawlee', {})
-        self.user_data['__crawlee']['maxRetries'] = new_max_retries
+        self.crawlee_data.max_retries = new_max_retries
 
     @property
     def session_rotation_count(self) -> int | None:
@@ -235,8 +344,7 @@ class Request(BaseRequestData):
 
     @session_rotation_count.setter
     def session_rotation_count(self, new_session_rotation_count: int) -> None:
-        self.user_data.setdefault('__crawlee', {})
-        self.user_data['__crawlee']['sessionRotationCount'] = new_session_rotation_count
+        self.crawlee_data.session_rotation_count = new_session_rotation_count
 
     @property
     def enqueue_strategy(self) -> EnqueueStrategy:
@@ -249,8 +357,7 @@ class Request(BaseRequestData):
 
     @enqueue_strategy.setter
     def enqueue_strategy(self, new_enqueue_strategy: EnqueueStrategy) -> None:
-        self.user_data.setdefault('__crawlee', {})
-        self.user_data['__crawlee']['enqueueStrategy'] = str(new_enqueue_strategy)
+        self.crawlee_data.enqueue_strategy = new_enqueue_strategy
 
     @property
     def last_proxy_tier(self) -> int | None:
@@ -259,8 +366,7 @@ class Request(BaseRequestData):
 
     @last_proxy_tier.setter
     def last_proxy_tier(self, new_value: int) -> None:
-        self.user_data.setdefault('__crawlee', {})
-        self.user_data['__crawlee']['lastProxyTier'] = new_value
+        self.crawlee_data.last_proxy_tier = new_value
 
     @property
     def forefront(self) -> bool:
@@ -269,32 +375,10 @@ class Request(BaseRequestData):
 
     @forefront.setter
     def forefront(self, new_value: bool) -> None:
-        self.user_data.setdefault('__crawlee', {})
-        self.user_data['__crawlee']['forefront'] = new_value
+        self.crawlee_data.forefront = new_value
 
 
 class RequestWithLock(Request):
     """A crawling request with information about locks."""
 
     lock_expires_at: Annotated[datetime, Field(alias='lockExpiresAt')]
-
-
-class CrawleeRequestData(BaseModel):
-    """Crawlee-specific configuration stored in the user_data."""
-
-    max_retries: Annotated[int | None, Field(alias='maxRetries')] = None
-    """Maximum number of retries for this request. Allows to override the global `max_request_retries` option of
-    `BasicCrawler`."""
-
-    enqueue_strategy: Annotated[str | None, Field(alias='enqueueStrategy')] = None
-
-    state: RequestState | None = None
-    """Describes the request's current lifecycle state."""
-
-    session_rotation_count: Annotated[int | None, Field(alias='sessionRotationCount')] = None
-
-    skip_navigation: Annotated[bool, Field(alias='skipNavigation')] = False
-
-    last_proxy_tier: Annotated[int | None, Field(alias='lastProxyTier')] = None
-
-    forefront: Annotated[bool, Field()] = False
