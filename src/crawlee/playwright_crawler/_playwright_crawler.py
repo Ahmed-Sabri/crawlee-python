@@ -50,7 +50,7 @@ class PlaywrightCrawler(BasicCrawler[PlaywrightCrawlingContext]):
         headless: bool | None = None,
         **kwargs: Unpack[BasicCrawlerOptions[PlaywrightCrawlingContext]],
     ) -> None:
-        """Create a new instance.
+        """A default constructor.
 
         Args:
             browser_pool: A `BrowserPool` instance to be used for launching the browsers and getting pages.
@@ -164,6 +164,7 @@ class PlaywrightCrawler(BasicCrawler[PlaywrightCrawlingContext]):
                 send_request=context.send_request,
                 push_data=context.push_data,
                 proxy_info=context.proxy_info,
+                get_key_value_store=context.get_key_value_store,
                 log=context.log,
                 page=crawlee_page.page,
                 infinite_scroll=lambda: infinite_scroll(crawlee_page.page),

@@ -23,7 +23,7 @@ from crawlee._autoscaling import AutoscaledPool
 from crawlee._autoscaling.snapshotter import Snapshotter
 from crawlee._autoscaling.system_status import SystemStatus
 from crawlee._log_config import configure_logger, get_configured_log_level
-from crawlee._request import BaseRequestData, Request, RequestState
+from crawlee._request import Request, RequestState
 from crawlee._types import BasicCrawlingContext, HttpHeaders, RequestHandlerRunResult, SendRequestFunction
 from crawlee._utils.byte_size import ByteSize
 from crawlee._utils.http import is_status_code_client_error
@@ -121,14 +121,14 @@ class BasicCrawler(Generic[TCrawlingContext]):
         _additional_context_managers: Sequence[AsyncContextManager] | None = None,
         _logger: logging.Logger | None = None,
     ) -> None:
-        """Initialize the BasicCrawler.
+        """A default constructor.
 
         Args:
-            request_provider: Provides requests to be processed
-            request_handler: A callable to which request handling is delegated
+            request_provider: Provides requests to be processed.
+            request_handler: A callable to which request handling is delegated.
             http_client: HTTP client to be used for `BasicCrawlingContext.send_request` and HTTP-only crawling.
-            concurrency_settings: Allows fine-tuning concurrency levels
-            max_request_retries: Maximum amount of attempts at processing a request
+            concurrency_settings: Allows fine-tuning concurrency levels.
+            max_request_retries: Maximum amount of attempts at processing a request.
             max_requests_per_crawl: Maximum number of pages that the crawler will open. The crawl will stop when
                 the limit is reached. It is recommended to set this value in order to prevent infinite loops in
                 misconfigured crawlers. None means no limit. Due to concurrency_settings, the actual number of pages
@@ -136,19 +136,19 @@ class BasicCrawler(Generic[TCrawlingContext]):
             max_session_rotations: Maximum number of session rotations per request.
                 The crawler will automatically rotate the session in case of a proxy error or if it gets blocked by
                 the website.
-            configuration: Crawler configuration
-            request_handler_timeout: How long is a single request handler allowed to run
-            use_session_pool: Enables using the session pool for crawling
-            session_pool: A preconfigured `SessionPool` instance if you wish to use non-default configuration
-            retry_on_blocked: If set to True, the crawler will try to automatically bypass any detected bot protection
-            proxy_configuration: A HTTP proxy configuration to be used for making requests
-            statistics: A preconfigured `Statistics` instance if you wish to use non-default configuration
-            event_manager: A custom `EventManager` instance if you wish to use a non-default one
-            configure_logging: If set to True, the crawler will configure the logging infrastructure
+            configuration: Crawler configuration.
+            request_handler_timeout: How long a single request handler is allowed to run.
+            use_session_pool: Enables using the session pool for crawling.
+            session_pool: A preconfigured `SessionPool` instance if you wish to use non-default configuration.
+            retry_on_blocked: If set to True, the crawler will try to automatically bypass any detected bot protection.
+            proxy_configuration: A HTTP proxy configuration to be used for making requests.
+            statistics: A preconfigured `Statistics` instance if you wish to use non-default configuration.
+            event_manager: A custom `EventManager` instance if you wish to use a non-default one.
+            configure_logging: If set to True, the crawler will configure the logging infrastructure.
             _context_pipeline: Allows extending the request lifecycle and modifying the crawling context.
                 This parameter is meant to be used by child classes, not when BasicCrawler is instantiated directly.
             _additional_context_managers: Additional context managers to be used in the crawler lifecycle.
-            _logger: A logger instance passed from a child class to ensure consistent labels
+            _logger: A logger instance passed from a child class to ensure consistent labels.
         """
         self._router: Router[TCrawlingContext] | None = None
 
@@ -339,9 +339,9 @@ class BasicCrawler(Generic[TCrawlingContext]):
         """Run the crawler until all requests are processed.
 
         Args:
-            requests: The requests to be enqueued before the crawler starts
+            requests: The requests to be enqueued before the crawler starts.
             purge_request_queue: If this is `True` and the crawler is not being run for the first time, the default
-                request queue will be purged
+                request queue will be purged.
         """
         if self._running:
             raise RuntimeError(
@@ -485,18 +485,16 @@ class BasicCrawler(Generic[TCrawlingContext]):
         dataset and then exports the data based on the provided parameters.
 
         Args:
-            path: The destination path
-            content_type: The output format
+            path: The destination path.
+            content_type: The output format.
             dataset_id: The ID of the dataset.
             dataset_name: The name of the dataset.
         """
         dataset = await self.get_dataset(id=dataset_id, name=dataset_name)
         path = path if isinstance(path, Path) else Path(path)
 
-        if content_type is None:
-            content_type = 'csv' if path.suffix == '.csv' else 'json'
-
-        return await dataset.write_to(content_type, path.open('w', newline=''))
+        final_content_type = content_type or ('csv' if path.suffix == '.csv' else 'json')
+        return await dataset.write_to(final_content_type, path.open('w', newline=''))
 
     async def _push_data(
         self,
@@ -716,13 +714,16 @@ class BasicCrawler(Generic[TCrawlingContext]):
         request_provider = await self.get_request_provider()
         origin = context.request.loaded_url or context.request.url
 
-        for call in result.add_requests_calls:
+        for add_requests_call in result.add_requests_calls:
             requests = list[Request]()
 
-            for request in call['requests']:
-                if (limit := call.get('limit')) is not None and len(requests) >= limit:
+            for request in add_requests_call['requests']:
+                if (limit := add_requests_call.get('limit')) is not None and len(requests) >= limit:
                     break
 
+                # If the request is a Request object, keep it as it is
+                if isinstance(request, Request):
+                    dst_request = request
                 # If the request is a string, convert it to Request object.
                 if isinstance(request, str):
                     if is_url_absolute(request):
@@ -730,26 +731,34 @@ class BasicCrawler(Generic[TCrawlingContext]):
 
                     # If the request URL is relative, make it absolute using the origin URL.
                     else:
-                        base_url = call['base_url'] if call.get('base_url') else origin
+                        base_url = url if (url := add_requests_call.get('base_url')) else origin
                         absolute_url = convert_to_absolute_url(base_url, request)
                         dst_request = Request.from_url(absolute_url)
 
                 # If the request is a BaseRequestData, convert it to Request object.
-                elif isinstance(request, BaseRequestData):
+                else:
                     dst_request = Request.from_base_request_data(request)
 
                 if self._check_enqueue_strategy(
-                    call.get('strategy', EnqueueStrategy.ALL),
+                    add_requests_call.get('strategy', EnqueueStrategy.ALL),
                     target_url=urlparse(dst_request.url),
                     origin_url=urlparse(origin),
                 ) and self._check_url_patterns(
                     dst_request.url,
-                    call.get('include', None),
-                    call.get('exclude', None),
+                    add_requests_call.get('include', None),
+                    add_requests_call.get('exclude', None),
                 ):
                     requests.append(dst_request)
 
             await request_provider.add_requests_batched(requests)
+
+        for push_data_call in result.push_data_calls:
+            await self._push_data(**push_data_call)
+
+        for (id, name), changes in result.key_value_store_changes.items():
+            store = await self.get_key_value_store(id=id, name=name)
+            for key, value in changes.updates.items():
+                await store.set_value(key, value.content, value.content_type)
 
     async def __is_finished_function(self) -> bool:
         request_provider = await self.get_request_provider()
@@ -792,7 +801,7 @@ class BasicCrawler(Generic[TCrawlingContext]):
 
         session = await self._get_session()
         proxy_info = await self._get_proxy_info(request, session)
-        result = RequestHandlerRunResult()
+        result = RequestHandlerRunResult(key_value_store_getter=self.get_key_value_store)
 
         crawling_context = BasicCrawlingContext(
             request=request,
@@ -800,7 +809,8 @@ class BasicCrawler(Generic[TCrawlingContext]):
             proxy_info=proxy_info,
             send_request=self._prepare_send_request_function(session, proxy_info),
             add_requests=result.add_requests,
-            push_data=self._push_data,
+            push_data=result.push_data,
+            get_key_value_store=result.get_key_value_store,
             log=self._logger,
         )
 
