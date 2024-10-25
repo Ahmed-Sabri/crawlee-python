@@ -9,7 +9,7 @@ os.makedirs(output_dir, exist_ok=True)
 
 async def main() -> None:
     crawler = PlaywrightCrawler(
-        max_requests_per_crawl=500,
+        max_requests_per_crawl=5000000,
     )
 
     @crawler.router.default_handler
