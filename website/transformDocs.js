@@ -4,6 +4,7 @@ const fs = require('fs');
 const { spawnSync } = require('child_process');
 
 const moduleShortcuts = require('./module_shortcuts.json');
+const path = require('path');
 
 const REPO_ROOT_PLACEHOLDER = 'REPO_ROOT_PLACEHOLDER';
 
@@ -29,10 +30,9 @@ for (const pkg of ['apify', 'apify_client', 'apify_shared']) {
 }
 
 // For the current package, set the tag to 'master'
-const thisPackagePyprojectToml = fs.readFileSync('../pyproject.toml', 'utf8');
+const thisPackagePyprojectToml = fs.readFileSync(path.join(__dirname, '..', '/pyproject.toml'), 'utf8');
 const thisPackageName = thisPackagePyprojectToml.match(/^name = "(.+)"$/m)[1];
 TAG_PER_PACKAGE[thisPackageName] = 'master';
-
 
 // Taken from https://github.com/TypeStrong/typedoc/blob/v0.23.24/src/lib/models/reflections/kind.ts, modified
 const TYPEDOC_KINDS = {
@@ -59,9 +59,11 @@ const TYPEDOC_KINDS = {
 }
 
 const GROUP_ORDER = [
-    'Main Classes',
-    'Helper Classes',
+    'Classes',
+    'Abstract classes',
+    'Data structures',
     'Errors',
+    'Functions',
     'Constructors',
     'Methods',
     'Properties',
@@ -77,15 +79,14 @@ const groupSort = (g1, g2) => {
 };
 
 function getGroupName(object) {
+    if (object.decorations?.some(d => d.name === 'docs_group')) {
+        return {
+            groupName: object.decorations.find(d => d.name === 'docs_group')?.args.slice(2,-2),
+            source: 'decorator'
+        }
+    }
+
     const groupPredicates = {
-        'Errors': (x) => x.name.toLowerCase().endsWith('error'),
-        'Main Classes': (x) => [
-            'BasicCrawler', 'HttpCrawler', 'BeautifulSoupCrawler', 'ParselCrawler', 'PlaywrightCrawler', 'Dataset',
-            'KeyValueStore', 'RequestQueue', 'MemoryStorageClient', 'HttpxHttpClient', 'CurlImpersonateHttpClient',
-            'Configuration', 'EventManager', 'LocalEventManager', 'Request', 'Session', 'SessionPool', 'BrowserPool',
-            'PlaywrightBrowserController', 'PlaywrightBrowserPlugin', 'Statistics',
-        ].includes(x.name),
-        'Helper Classes': (x) => x.kindString === 'Class',
         'Methods': (x) => x.kindString === 'Method',
         'Constructors': (x) => x.kindString === 'Constructor',
         'Properties': (x) => x.kindString === 'Property',
@@ -93,11 +94,11 @@ function getGroupName(object) {
         'Enumeration Members': (x) => x.kindString === 'Enumeration Member',
     };
 
-    const [group] = Object.entries(groupPredicates).find(
+    const groupName = Object.entries(groupPredicates).find(
         ([_, predicate]) => predicate(object)
-    );
+    )?.[0];
 
-    return group;
+    return { groupName, source: 'predicate' };
 }
 
 // Strips the Optional[] type from the type string, and replaces generic types with just the main type
@@ -105,26 +106,46 @@ function getBaseType(type) {
     return type?.replace(/Optional\[(.*)\]/g, '$1').split('[')[0];
 }
 
-// Returns whether a type is a custom class, or a primitive type
-function isCustomClass(type) {
-    return !['dict', 'list', 'str', 'int', 'float', 'bool'].includes(type.toLowerCase());
+const typedocTypes = [];
+
+function parseTypes(typedocTypes) {
+    fs.writeFileSync(
+        path.join(__dirname, 'typedoc-types.raw'),
+        JSON.stringify(
+            typedocTypes
+            .map(x => x.name)
+            .filter(x=>x)
+        )
+    );
+
+    spawnSync('python', ['parse_types.py', 'typedoc-types.raw']);
+
+    const parsedTypes = JSON.parse(
+        fs.readFileSync(
+            path.join(__dirname, 'typedoc-types-parsed.json'),
+            'utf8'
+        )
+    );
+
+    for (type of typedocTypes) {
+        const parsedType = parsedTypes[type.name];
+
+        if (parsedType) {
+            for (const key in parsedType) {
+                type[key] = parsedType[key];
+            }
+        }
+    }
 }
 
 // Infer the Typedoc type from the docspec type
 function inferTypedocType(docspecType) {
-    const typeWithoutOptional = getBaseType(docspecType);
-    if (!typeWithoutOptional) {
-        return undefined;
-    }
-
-    // Typically, if a type is a custom class, it will be a reference in Typedoc
-    return isCustomClass(typeWithoutOptional) ? {
+    typedocTypes.push({
+        name: docspecType?.replaceAll(/#.*/g, '').replaceAll('\n', '').trim() ?? docspecType,
         type: 'reference',
-        name: docspecType
-    } : {
-        type: 'intrinsic',
-        name: docspecType,
-    }
+    })
+
+    return typedocTypes[typedocTypes.length - 1];
 }
 
 // Sorts the groups of a Typedoc member, and sorts the children of each group
@@ -158,6 +179,57 @@ const newContext = (context) => contextStack.push(context);
 
 const forwardAncestorRefs = new Map();
 const backwardAncestorRefs = new Map();
+
+function injectInheritedChildren(ancestor, descendant) {
+    descendant.children = descendant.children ?? [];
+
+    for (const inheritedChild of ancestor.children ?? []) {
+        let ownChild = descendant.children?.find((x) => x.name === inheritedChild.name);
+
+        if (!ownChild) {
+            const childId = oid++;
+
+            const { groupName } = getGroupName(inheritedChild);
+            if (!groupName) {
+                throw new Error(`Couldn't resolve the group name for ${inheritedChild.name} (inherited child of ${ancestor.name})`);
+            }
+
+            const group = descendant.groups.find((g) => g.title === groupName);
+
+            if (group) {
+                group.children.push(inheritedChild.id);
+            } else {
+                descendant.groups.push({
+                    title: groupName,
+                    children: [inheritedChild.id],
+                });
+            }
+
+            descendant.children.push({
+                ...inheritedChild,
+                id: childId,
+                inheritedFrom: {
+                    type: "reference",
+                    target: inheritedChild.id,
+                    name: `${ancestor.name}.${inheritedChild.name}`,
+                }
+            });
+        } else if (!ownChild.comment.summary[0].text) {
+            ownChild.inheritedFrom = {
+                type: "reference",
+                target: inheritedChild.id,
+                name: `${ancestor.name}.${inheritedChild.name}`,
+            }
+
+            for (let key in inheritedChild) {
+                if(key !== 'id' && key !== 'inheritedFrom') {
+                    ownChild[key] = inheritedChild[key];
+                }
+            }
+        }
+    }  
+}
+
 
 // Converts a docspec object to a Typedoc object, including all its children
 function convertObject(obj, parent, module) {
@@ -243,6 +315,7 @@ function convertObject(obj, parent, module) {
                     }],
                 } : undefined,
                 type: typedocType,
+                decorations: member.decorations?.map(({ name, args }) => ({ name, args })),
                 children: [],
                 groups: [],
                 sources: [{
@@ -326,41 +399,9 @@ function convertObject(obj, parent, module) {
                                     name: typedocMember.name,
                                     target: typedocMember.id,
                                 }
-                            ]
+                            ];
 
-                            typedocMember.children = [
-                                ...typedocMember.children ?? [],
-                                ...(baseTypedocMember.children ?? []).map((inheritedChild) => {
-                                    if (typedocMember.children?.some((x) => x.name === inheritedChild.name)) {
-                                        return;
-                                    }
-
-                                    const childId = oid++;
-
-                                    const groupName = getGroupName(inheritedChild);
-                                    const group = typedocMember.groups.find((g) => g.title === groupName);
-
-                                    if (group) {
-                                        group.children.push(inheritedChild.id);
-                                    } else {
-                                        typedocMember.groups.push({
-                                            title: groupName,
-                                            children: [inheritedChild.id],
-                                        });
-                                    }
-
-                                    return {
-                                        ...inheritedChild,
-                                        id: childId,
-                                        inheritedFrom: {
-                                            type: "reference",
-                                            target: inheritedChild.id,
-                                            name: `${baseTypedocMember.name}.${inheritedChild.name}`,
-                                        }
-                                    }
-                                }).filter(x => x),
-                            ]
-                            
+                            injectInheritedChildren(baseTypedocMember, typedocMember);
                         } else {
                             forwardAncestorRefs.set(
                                 unwrappedBaseType, 
@@ -375,16 +416,21 @@ function convertObject(obj, parent, module) {
                 popContext();
             }
 
-            const groupName = getGroupName(typedocMember);
+            const { groupName, source: groupSource } = getGroupName(typedocMember);
 
-            const group = parent.groups.find((g) => g.title === groupName);
-            if (group) {
-                group.children.push(typedocMember.id);
-            } else {
-                parent.groups.push({
-                    title: groupName,
-                    children: [typedocMember.id],
-                });
+            if (groupName) {
+                // Use the decorator classes everytime, but don't render the class-level groups for the root project
+                if (groupSource === 'decorator' || parent.kindString !== 'Project') {
+                    const group = parent.groups.find((g) => g.title === groupName);
+                    if (group) {
+                        group.children.push(typedocMember.id);
+                    } else {
+                        parent.groups.push({
+                            title: groupName,
+                            children: [typedocMember.id],
+                        });
+                    }
+                }
             }
 
             parent.children.push(typedocMember);
@@ -411,42 +457,25 @@ function convertObject(obj, parent, module) {
                         }
                     ]
 
-                    descendant.children = [
-                        ...descendant.children ?? [],
-                        ...(typedocMember.children ?? []).map((inheritedChild) => {
-                            if (descendant.children?.some((x) => x.name === inheritedChild.name)) {
-                                return;
-                            }
-
-                            const childId = oid++;
-
-                            const groupName = getGroupName(inheritedChild);
-                            const group = descendant.groups.find((g) => g.title === groupName);
-
-                            if (group) {
-                                group.children.push(inheritedChild.id);
-                            } else {
-                                descendant.groups.push({
-                                    title: groupName,
-                                    children: [inheritedChild.id],
-                                });
-                            }
-
-                            return {
-                                ...inheritedChild,
-                                id: childId,
-                                inheritedFrom: {
-                                    type: "reference",
-                                    target: inheritedChild.id,
-                                    name: `${typedocMember.name}.${inheritedChild.name}`,
-                                }
-                            }
-                        }).filter(x => x),
-                    ]
+                    injectInheritedChildren(typedocMember, descendant);
 
                     sortChildren(descendant);
                 });
             }
+        }
+    }
+}
+
+// Recursively traverse a javascript POJO object, if it contains both 'name' and 'type : reference' keys, add the 'target' key
+// with the corresponding id of the object with the same name
+
+function fixRefs(obj, namesToIds) {
+    for (const key in obj) {
+        if (key === 'name' && obj?.type === 'reference' && namesToIds[obj?.name]) {
+            obj.target = namesToIds[obj?.name];
+        }
+        if (typeof obj[key] === 'object' && obj[key] !== null) {
+            fixRefs(obj[key], namesToIds);
         }
     }
 }
@@ -473,13 +502,16 @@ function main() {
     };
 
     // Load the docspec dump files of this module and of apify-shared
-    const thisPackageDocspecDump = fs.readFileSync('docspec-dump.jsonl', 'utf8');
+    const thisPackageDocspecDump = fs.readFileSync(path.join(__dirname, 'docspec-dump.jsonl'), 'utf8');
     const thisPackageModules = JSON.parse(thisPackageDocspecDump)
 
     // Convert all the modules, store them in the root object
     for (const module of thisPackageModules) {
         convertObject(module, typedocApiReference, module);
     };
+
+    // Runs the Python AST parser on the collected types to get rich type information
+    parseTypes(typedocTypes);
 
     // Recursively fix references (collect names->ids of all the named entities and then inject those in the reference objects)
     const namesToIds = {};
@@ -490,28 +522,7 @@ function main() {
         }
     }
     collectIds(typedocApiReference);
-
-    function fixRefs(obj) {
-        for (const child of obj.children ?? []) {
-            if (child.type?.type === 'reference') {
-                child.type.target = namesToIds[child.type.name];
-            }
-            if (child.signatures) {
-                for (const sig of child.signatures) {
-                    for (const param of sig.parameters ?? []) {
-                        if (param.type?.type === 'reference') {
-                            param.type.target = namesToIds[param.type.name];
-                        }
-                    }
-                    if (sig.type?.type === 'reference') {
-                        sig.type.target = namesToIds[sig.type.name];
-                    }
-                }
-            }
-            fixRefs(child);
-        }
-    }
-    fixRefs(typedocApiReference);
+    fixRefs(typedocApiReference, namesToIds);
 
     // Sort the children of the root object
     sortChildren(typedocApiReference);
@@ -519,7 +530,7 @@ function main() {
     typedocApiReference.symbolIdMap = Object.fromEntries(Object.entries(symbolIdMap));
 
     // Write the Typedoc structure to the output file
-    fs.writeFileSync('./api-typedoc-generated.json', JSON.stringify(typedocApiReference, null, 4));
+    fs.writeFileSync(path.join(__dirname, 'api-typedoc-generated.json'), JSON.stringify(typedocApiReference, null, 4));
 }
 
 if (require.main === module) {
