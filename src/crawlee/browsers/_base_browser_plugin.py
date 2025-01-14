@@ -25,18 +25,33 @@ class BaseBrowserPlugin(ABC):
 
     @property
     @abstractmethod
+    def active(self) -> bool:
+        """Indicates whether the context is active."""
+
+    @property
+    @abstractmethod
     def browser_type(self) -> BrowserType:
         """Return the browser type name."""
 
     @property
     @abstractmethod
-    def browser_options(self) -> Mapping[str, Any]:
-        """Return the options for a new browser."""
+    def browser_launch_options(self) -> Mapping[str, Any]:
+        """Return the options for the `browser.launch` method.
+
+        Keyword arguments to pass to the browser launch method. These options are provided directly to Playwright's
+        `browser_type.launch` method. For more details, refer to the Playwright documentation:
+         https://playwright.dev/python/docs/api/class-browsertype#browser-type-launch.
+        """
 
     @property
     @abstractmethod
-    def page_options(self) -> Mapping[str, Any]:
-        """Return the options for a new page."""
+    def browser_new_context_options(self) -> Mapping[str, Any]:
+        """Return the options for the `browser.new_context` method.
+
+        Keyword arguments to pass to the browser new context method. These options are provided directly to Playwright's
+        `browser.new_context` method. For more details, refer to the Playwright documentation:
+        https://playwright.dev/python/docs/api/class-browser#browser-new-context.
+        """
 
     @property
     @abstractmethod
@@ -45,7 +60,11 @@ class BaseBrowserPlugin(ABC):
 
     @abstractmethod
     async def __aenter__(self) -> BaseBrowserPlugin:
-        """Enter the context manager and initialize the browser plugin."""
+        """Enter the context manager and initialize the browser plugin.
+
+        Raises:
+            RuntimeError: If the context manager is already active.
+        """
 
     @abstractmethod
     async def __aexit__(
@@ -54,7 +73,11 @@ class BaseBrowserPlugin(ABC):
         exc_value: BaseException | None,
         exc_traceback: TracebackType | None,
     ) -> None:
-        """Exit the context manager and close the browser plugin."""
+        """Exit the context manager and close the browser plugin.
+
+        Raises:
+            RuntimeError: If the context manager is not active.
+        """
 
     @abstractmethod
     async def new_browser(self) -> BaseBrowserController:

@@ -7,13 +7,15 @@ import math
 from contextlib import suppress
 from datetime import timedelta
 from logging import getLogger
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING, Callable
 
 from crawlee._types import ConcurrencySettings
 from crawlee._utils.docs import docs_group
 from crawlee._utils.recurring_task import RecurringTask
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
     from crawlee._autoscaling import SystemStatus
 
 logger = getLogger(__name__)
@@ -193,7 +195,7 @@ class AutoscaledPool:
         """Inspect system load status and adjust desired concurrency if necessary. Do not call directly."""
         status = self._system_status.get_historical_system_info()
 
-        min_current_concurrency = math.floor(self._desired_concurrency_ratio * self.current_concurrency)
+        min_current_concurrency = math.floor(self._desired_concurrency_ratio * self.desired_concurrency)
         should_scale_up = (
             status.is_system_idle
             and self._desired_concurrency < self._max_concurrency

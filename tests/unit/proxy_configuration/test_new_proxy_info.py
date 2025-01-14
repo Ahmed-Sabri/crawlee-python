@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from itertools import cycle
 from typing import TYPE_CHECKING
 
 import pytest
-from httpx import InvalidURL
 
 from crawlee.proxy_configuration import ProxyConfiguration
 
@@ -12,10 +12,13 @@ if TYPE_CHECKING:
 
 
 async def test_returns_proxy_info() -> None:
-    config = ProxyConfiguration(proxy_urls=['http://proxy.com:1111'])
+    """Test that proxy_urls can return contain both string and None."""
+    config = ProxyConfiguration(proxy_urls=[None, 'http://proxy.com:1111'])
 
     proxy_info = await config.new_proxy_info(None, None, None)
+    assert proxy_info is None
 
+    proxy_info = await config.new_proxy_info(None, None, None)
     assert proxy_info is not None
     assert proxy_info.url == 'http://proxy.com:1111'
     assert proxy_info.hostname == 'proxy.com'
@@ -29,17 +32,20 @@ async def test_throws_on_invalid_new_url_function() -> None:
         new_url_function=lambda session_id=None, request=None: 'http://proxy.com:1111*invalid_url'  # noqa: ARG005
     )
 
-    with pytest.raises(ValueError) as exc:  # noqa: PT011
+    with pytest.raises(ValueError):  # noqa: PT011
         await config.new_proxy_info(None, None, None)
-
-    assert isinstance(exc.value.__cause__, InvalidURL)
 
 
 async def test_returns_proxy_info_with_new_url_function() -> None:
-    config = ProxyConfiguration(new_url_function=lambda session_id=None, request=None: 'http://proxy.com:1111')  # noqa: ARG005
+    """Test that new_url_function can return string and None."""
+    proxy_iterator = cycle([None, 'http://proxy.com:1111'])
+
+    config = ProxyConfiguration(new_url_function=lambda session_id=None, request=None: next(proxy_iterator))  # noqa: ARG005
 
     proxy_info = await config.new_proxy_info(None, None, None)
+    assert proxy_info is None
 
+    proxy_info = await config.new_proxy_info(None, None, None)
     assert proxy_info is not None
     assert proxy_info.url == 'http://proxy.com:1111'
     assert proxy_info.hostname == 'proxy.com'
@@ -65,7 +71,7 @@ async def test_returns_proxy_info_with_new_url_function_async() -> None:
 
 
 async def test_rotates_proxies() -> None:
-    proxy_urls = ['http://proxy:1111', 'http://proxy:2222', 'http://proxy:3333']
+    proxy_urls: list[str | None] = ['http://proxy:1111', 'http://proxy:2222', 'http://proxy:3333']
     config = ProxyConfiguration(proxy_urls=proxy_urls)
 
     info = await config.new_proxy_info(None, None, None)
@@ -82,7 +88,7 @@ async def test_rotates_proxies() -> None:
 
 
 async def test_rotates_proxies_with_sessions() -> None:
-    proxy_urls = ['http://proxy:1111', 'http://proxy:2222', 'http://proxy:3333']
+    proxy_urls: list[str | None] = ['http://proxy:1111', 'http://proxy:2222', 'http://proxy:3333']
     sessions = [f'session_{i}' for i in range(6)]
 
     config = ProxyConfiguration(proxy_urls=proxy_urls)

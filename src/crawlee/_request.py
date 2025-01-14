@@ -1,21 +1,21 @@
-# ruff: noqa: TCH001, TCH002, TCH003 (because of Pydantic)
-
 from __future__ import annotations
 
 from collections.abc import Iterator, MutableMapping
 from datetime import datetime
-from decimal import Decimal
 from enum import IntEnum
-from typing import Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, PlainSerializer, PlainValidator, TypeAdapter
-from typing_extensions import Self
+from yarl import URL
 
 from crawlee._types import EnqueueStrategy, HttpHeaders, HttpMethod, HttpPayload, JsonSerializable
 from crawlee._utils.crypto import crypto_random_object_id
 from crawlee._utils.docs import docs_group
 from crawlee._utils.requests import compute_unique_key, unique_key_to_request_id
-from crawlee._utils.urls import extract_query_params, validate_http_url
+from crawlee._utils.urls import validate_http_url
+
+if TYPE_CHECKING:
+    from typing_extensions import Self
 
 
 class RequestState(IntEnum):
@@ -67,7 +67,7 @@ class UserData(BaseModel, MutableMapping[str, JsonSerializable]):
     """
 
     model_config = ConfigDict(extra='allow')
-    __pydantic_extra__: dict[str, JsonSerializable] = Field(init=False)  # pyright: ignore
+    __pydantic_extra__: dict[str, JsonSerializable] = Field(init=False)
 
     crawlee_data: Annotated[CrawleeRequestData | None, Field(alias='__crawlee')] = None
     """Crawlee-specific configuration stored in the `user_data`."""
@@ -89,7 +89,7 @@ class UserData(BaseModel, MutableMapping[str, JsonSerializable]):
     def __delitem__(self, key: str) -> None:
         del self.__pydantic_extra__[key]
 
-    def __iter__(self) -> Iterator[str]:  # type: ignore
+    def __iter__(self) -> Iterator[str]:  # type: ignore[override]
         yield from self.__pydantic_extra__
 
     def __len__(self) -> int:
@@ -140,11 +140,7 @@ class BaseRequestData(BaseModel):
         BeforeValidator(lambda v: v.encode() if isinstance(v, str) else v),
         PlainSerializer(lambda v: v.decode() if isinstance(v, bytes) else v),
     ] = None
-    """HTTP request payload.
-
-    TODO: Re-check the need for `Validator` and `Serializer` once the issue is resolved.
-    https://github.com/apify/crawlee-python/issues/94
-    """
+    """HTTP request payload."""
 
     user_data: Annotated[
         dict[str, JsonSerializable],  # Internally, the model contains `UserData`, this is just for convenience
@@ -186,7 +182,6 @@ class BaseRequestData(BaseModel):
         payload: HttpPayload | str | None = None,
         label: str | None = None,
         unique_key: str | None = None,
-        id: str | None = None,
         keep_url_fragment: bool = False,
         use_extended_unique_key: bool = False,
         **kwargs: Any,
@@ -207,12 +202,9 @@ class BaseRequestData(BaseModel):
             use_extended_unique_key=use_extended_unique_key,
         )
 
-        id = id or unique_key_to_request_id(unique_key)
-
         request = cls(
             url=url,
             unique_key=unique_key,
-            id=id,
             method=method,
             headers=headers,
             payload=payload,
@@ -226,9 +218,8 @@ class BaseRequestData(BaseModel):
 
     def get_query_param_from_url(self, param: str, *, default: str | None = None) -> str | None:
         """Get the value of a specific query parameter from the URL."""
-        query_params = extract_query_params(self.url)
-        values = query_params.get(param, [default])  # parse_qs returns values as list
-        return values[0]
+        query_params = URL(self.url).query
+        return query_params.get(param, default)
 
 
 @docs_group('Data structures')
@@ -259,18 +250,6 @@ class Request(BaseRequestData):
     id: str
     """A unique identifier for the request. Note that this is not used for deduplication, and should not be confused
     with `unique_key`."""
-
-    json_: str | None = None
-    """Deprecated internal field, do not use it.
-
-    Should be removed as part of https://github.com/apify/crawlee-python/issues/94.
-    """
-
-    order_no: Decimal | None = None
-    """Deprecated internal field, do not use it.
-
-    Should be removed as part of https://github.com/apify/crawlee-python/issues/94.
-    """
 
     @classmethod
     def from_url(
@@ -439,35 +418,6 @@ class Request(BaseRequestData):
     @forefront.setter
     def forefront(self, new_value: bool) -> None:
         self.crawlee_data.forefront = new_value
-
-    def __eq__(self, other: object) -> bool:
-        """Compare all relevant fields of the `Request` class, excluding deprecated fields `json_` and `order_no`.
-
-        TODO: Remove this method once the issue is resolved.
-        https://github.com/apify/crawlee-python/issues/94
-        """
-        if isinstance(other, Request):
-            return (
-                self.url == other.url
-                and self.unique_key == other.unique_key
-                and self.method == other.method
-                and self.headers == other.headers
-                and self.payload == other.payload
-                and self.user_data == other.user_data
-                and self.retry_count == other.retry_count
-                and self.no_retry == other.no_retry
-                and self.loaded_url == other.loaded_url
-                and self.handled_at == other.handled_at
-                and self.id == other.id
-                and self.label == other.label
-                and self.state == other.state
-                and self.max_retries == other.max_retries
-                and self.session_rotation_count == other.session_rotation_count
-                and self.enqueue_strategy == other.enqueue_strategy
-                and self.last_proxy_tier == other.last_proxy_tier
-                and self.forefront == other.forefront
-            )
-        return NotImplemented
 
 
 class RequestWithLock(Request):

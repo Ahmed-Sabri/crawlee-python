@@ -1,12 +1,12 @@
 # First, specify the base Docker image.
 # You can see the Docker images from Apify at https://hub.docker.com/r/apify/.
 # You can also use any other image from Docker Hub.
-FROM apify/actor-python-playwright:3.12
+FROM apify/actor-python-playwright:3.13
 
 RUN apt install -yq git && rm -rf /var/lib/apt/lists/*
 
 RUN pip install -U pip setuptools \
-    && pip install poetry \
+    && pip install 'poetry<2' \
     && poetry self add poetry-plugin-export
 
 # Second, copy just poetry.lock and pyproject.toml into the Actor image,

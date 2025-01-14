@@ -3,22 +3,21 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from logging import getLogger
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
+from crawlee import service_locator
 from crawlee._autoscaling import Snapshotter
 from crawlee._autoscaling.types import CpuSnapshot, EventLoopSnapshot, Snapshot
 from crawlee._utils.byte_size import ByteSize
 from crawlee._utils.system import CpuInfo, MemoryInfo
-from crawlee.events import EventManager, LocalEventManager
-from crawlee.events._types import EventSystemInfoData
+from crawlee.events._types import Event, EventSystemInfoData
 
 
 @pytest.fixture
 def snapshotter() -> Snapshotter:
-    mocked_event_manager = AsyncMock(spec=EventManager)
-    return Snapshotter(mocked_event_manager, available_memory_ratio=0.25)
+    return Snapshotter(available_memory_ratio=0.25)
 
 
 @pytest.fixture
@@ -33,7 +32,7 @@ def event_system_data_info() -> EventSystemInfoData:
 
 
 async def test_start_stop_lifecycle() -> None:
-    async with LocalEventManager() as event_manager, Snapshotter(event_manager, available_memory_ratio=0.25):
+    async with Snapshotter(available_memory_ratio=0.25):
         pass
 
 
@@ -50,9 +49,11 @@ def test_snapshot_memory(snapshotter: Snapshotter, event_system_data_info: Event
 
 
 def test_snapshot_event_loop(snapshotter: Snapshotter) -> None:
-    snapshotter._event_loop_snapshots = [
-        EventLoopSnapshot(delay=timedelta(milliseconds=100), max_delay=timedelta(milliseconds=500)),
-    ]
+    snapshotter._event_loop_snapshots = Snapshotter._get_sorted_list_by_created_at(
+        [
+            EventLoopSnapshot(delay=timedelta(milliseconds=100), max_delay=timedelta(milliseconds=500)),
+        ]
+    )
 
     snapshotter._snapshot_event_loop()
     assert len(snapshotter._event_loop_snapshots) == 2
@@ -63,44 +64,62 @@ def test_snapshot_client(snapshotter: Snapshotter) -> None:
     assert len(snapshotter._client_snapshots) == 1
 
 
-def test_get_cpu_sample(snapshotter: Snapshotter) -> None:
+async def test_get_cpu_sample(snapshotter: Snapshotter) -> None:
     now = datetime.now(timezone.utc)
-    cpu_snapshots = [
-        CpuSnapshot(
-            used_ratio=0.5,
-            max_used_ratio=0.95,
-            created_at=now - timedelta(hours=delta),
-        )
-        for delta in range(5, 0, -1)
-    ]
-
+    cpu_snapshots = Snapshotter._get_sorted_list_by_created_at(
+        [
+            CpuSnapshot(used_ratio=0.5, max_used_ratio=0.95, created_at=now - timedelta(hours=delta))
+            for delta in range(5, 0, -1)
+        ]
+    )
     snapshotter._cpu_snapshots = cpu_snapshots
 
-    # When no sample duration is provided it should return all snapshots
-    samples = snapshotter.get_cpu_sample()
-    assert len(samples) == len(cpu_snapshots)
+    async with snapshotter:
+        # When no sample duration is provided it should return all snapshots
+        samples = snapshotter.get_cpu_sample()
+        assert len(samples) == len(cpu_snapshots)
 
-    duration = timedelta(hours=0.5)
-    samples = snapshotter.get_cpu_sample(duration)
-    assert len(samples) == 1
+        duration = timedelta(hours=0.5)
+        samples = snapshotter.get_cpu_sample(duration)
+        assert len(samples) == 1
 
-    duration = timedelta(hours=2.5)
-    samples = snapshotter.get_cpu_sample(duration)
-    assert len(samples) == 3
+        duration = timedelta(hours=2.5)
+        samples = snapshotter.get_cpu_sample(duration)
+        assert len(samples) == 3
 
-    duration = timedelta(hours=10)
-    samples = snapshotter.get_cpu_sample(duration)
-    assert len(samples) == len(cpu_snapshots)
+        duration = timedelta(hours=10)
+        samples = snapshotter.get_cpu_sample(duration)
+        assert len(samples) == len(cpu_snapshots)
 
 
-def test_empty_snapshot_samples_return_empty_lists(snapshotter: Snapshotter) -> None:
-    # All get resource sample uses the same helper function, so testing only one of them properly (CPU) should be
-    # enough. Here just call all of them returning empty list to make sure they don't crash.
-    assert snapshotter.get_cpu_sample() == []
-    assert snapshotter.get_memory_sample() == []
-    assert snapshotter.get_event_loop_sample() == []
-    assert snapshotter.get_client_sample() == []
-    assert snapshotter._get_sample([], timedelta(hours=1)) == []
+async def test_methods_raise_error_when_not_active() -> None:
+    snapshotter = Snapshotter(available_memory_ratio=0.25)
+
+    assert snapshotter.active is False
+
+    with pytest.raises(RuntimeError, match='Snapshotter is not active.'):
+        snapshotter.get_cpu_sample()
+
+    with pytest.raises(RuntimeError, match='Snapshotter is not active.'):
+        snapshotter.get_memory_sample()
+
+    with pytest.raises(RuntimeError, match='Snapshotter is not active.'):
+        snapshotter.get_event_loop_sample()
+
+    with pytest.raises(RuntimeError, match='Snapshotter is not active.'):
+        snapshotter.get_client_sample()
+
+    with pytest.raises(RuntimeError, match='Snapshotter is already active.'):
+        async with snapshotter, snapshotter:
+            pass
+
+    async with snapshotter:
+        snapshotter.get_cpu_sample()
+        snapshotter.get_memory_sample()
+        snapshotter.get_event_loop_sample()
+        snapshotter.get_client_sample()
+
+        assert snapshotter.active is True
 
 
 def test_snapshot_pruning_removes_outdated_records(snapshotter: Snapshotter) -> None:
@@ -114,12 +133,14 @@ def test_snapshot_pruning_removes_outdated_records(snapshotter: Snapshotter) -> 
     five_hours_ago = now - timedelta(hours=5)
 
     # Create mock snapshots with varying creation times
-    snapshots = [
-        CpuSnapshot(used_ratio=0.5, max_used_ratio=0.95, created_at=five_hours_ago),
-        CpuSnapshot(used_ratio=0.6, max_used_ratio=0.95, created_at=three_hours_ago),
-        CpuSnapshot(used_ratio=0.7, max_used_ratio=0.95, created_at=two_hours_ago),
-        CpuSnapshot(used_ratio=0.8, max_used_ratio=0.95, created_at=now),
-    ]
+    snapshots = Snapshotter._get_sorted_list_by_created_at(
+        [
+            CpuSnapshot(used_ratio=0.5, max_used_ratio=0.95, created_at=five_hours_ago),
+            CpuSnapshot(used_ratio=0.6, max_used_ratio=0.95, created_at=three_hours_ago),
+            CpuSnapshot(used_ratio=0.7, max_used_ratio=0.95, created_at=two_hours_ago),
+            CpuSnapshot(used_ratio=0.8, max_used_ratio=0.95, created_at=now),
+        ]
+    )
 
     # Assign these snapshots to one of the lists (e.g., CPU snapshots)
     snapshotter._cpu_snapshots = snapshots
@@ -136,7 +157,7 @@ def test_snapshot_pruning_removes_outdated_records(snapshotter: Snapshotter) -> 
 
 def test_pruning_empty_snapshot_list_remains_empty(snapshotter: Snapshotter) -> None:
     now = datetime.now(timezone.utc)
-    snapshotter._cpu_snapshots = []
+    snapshotter._cpu_snapshots = Snapshotter._get_sorted_list_by_created_at(list[CpuSnapshot]())
     snapshots_casted = cast(list[Snapshot], snapshotter._cpu_snapshots)
     snapshotter._prune_snapshots(snapshots_casted, now)
     assert snapshotter._cpu_snapshots == []
@@ -150,10 +171,12 @@ def test_snapshot_pruning_keeps_recent_records_unaffected(snapshotter: Snapshott
     one_hour_ago = now - timedelta(hours=1)
 
     # Create mock snapshots with varying creation times
-    snapshots = [
-        CpuSnapshot(used_ratio=0.7, max_used_ratio=0.95, created_at=one_hour_ago),
-        CpuSnapshot(used_ratio=0.8, max_used_ratio=0.95, created_at=now),
-    ]
+    snapshots = Snapshotter._get_sorted_list_by_created_at(
+        [
+            CpuSnapshot(used_ratio=0.7, max_used_ratio=0.95, created_at=one_hour_ago),
+            CpuSnapshot(used_ratio=0.8, max_used_ratio=0.95, created_at=now),
+        ]
+    )
 
     # Assign these snapshots to one of the lists (e.g., CPU snapshots)
     snapshotter._cpu_snapshots = snapshots
@@ -169,7 +192,7 @@ def test_snapshot_pruning_keeps_recent_records_unaffected(snapshotter: Snapshott
 
 
 def test_memory_load_evaluation_logs_warning_on_high_usage(caplog: pytest.LogCaptureFixture) -> None:
-    snapshotter = Snapshotter(AsyncMock(spec=EventManager), max_memory_size=ByteSize.from_gb(8))
+    snapshotter = Snapshotter(max_memory_size=ByteSize.from_gb(8))
 
     high_memory_usage = ByteSize.from_gb(8) * 0.95  # 95% of 8 GB
 
@@ -207,3 +230,35 @@ def test_memory_load_evaluation_silent_on_acceptable_usage(
     )
 
     assert mock_logger_warn.call_count == 0
+
+
+async def test_snapshots_time_ordered() -> None:
+    # All internal snapshot list should be ordered by creation time in ascending order.
+    # Scenario where older emitted event arrives after newer event.
+    # Snapshotter should not trust the event order and check events' times.
+    time_new = datetime.now(tz=timezone.utc)
+    time_old = datetime.now(tz=timezone.utc) - timedelta(milliseconds=50)
+
+    def create_event_data(creation_time: datetime) -> EventSystemInfoData:
+        return EventSystemInfoData(
+            cpu_info=CpuInfo(used_ratio=0.5, created_at=creation_time),
+            memory_info=MemoryInfo(
+                current_size=ByteSize(bytes=1), created_at=creation_time, total_size=ByteSize(bytes=2)
+            ),
+        )
+
+    async with (
+        service_locator.get_event_manager() as event_manager,
+        Snapshotter(available_memory_ratio=0.25) as snapshotter,
+    ):
+        event_manager.emit(event=Event.SYSTEM_INFO, event_data=create_event_data(time_new))
+        await event_manager.wait_for_all_listeners_to_complete()
+        event_manager.emit(event=Event.SYSTEM_INFO, event_data=create_event_data(time_old))
+        await event_manager.wait_for_all_listeners_to_complete()
+
+        memory_samples = snapshotter.get_memory_sample()
+        cpu_samples = snapshotter.get_cpu_sample()
+        assert memory_samples[0].created_at == time_old
+        assert cpu_samples[0].created_at == time_old
+        assert memory_samples[1].created_at == time_new
+        assert cpu_samples[1].created_at == time_new
