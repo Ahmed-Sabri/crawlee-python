@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from crawlee.browsers._base_browser_plugin import BaseBrowserPlugin
+    from crawlee.fingerprint_suite import FingerprintGenerator
     from crawlee.proxy_configuration import ProxyInfo
 
 logger = getLogger(__name__)
@@ -30,9 +31,9 @@ logger = getLogger(__name__)
 
 @docs_group('Classes')
 class BrowserPool:
-    """Manages a pool of browsers and their pages, handling lifecycle events and resource allocation.
+    """Manage a pool of browsers and pages, handling their lifecycle and resource allocation.
 
-    This class is responsible for opening and closing browsers, managing pages within those browsers,
+    The `BrowserPool` is responsible for opening and closing browsers, managing pages within those browsers,
     and handling the overall lifecycle of these resources. It provides flexible configuration via
     constructor options, which include various hooks that allow for the insertion of custom behavior
     at different stages of the browser and page lifecycles.
@@ -103,6 +104,8 @@ class BrowserPool:
         browser_launch_options: Mapping[str, Any] | None = None,
         browser_new_context_options: Mapping[str, Any] | None = None,
         headless: bool | None = None,
+        fingerprint_generator: FingerprintGenerator | None = None,
+        use_incognito_pages: bool | None = False,
         **kwargs: Any,
     ) -> BrowserPool:
         """Create a new instance with a single `PlaywrightBrowserPlugin` configured with the provided options.
@@ -116,6 +119,10 @@ class BrowserPool:
                 are provided directly to Playwright's `browser.new_context` method. For more details, refer to the
                 Playwright documentation: https://playwright.dev/python/docs/api/class-browser#browser-new-context.
             headless: Whether to run the browser in headless mode.
+            fingerprint_generator: An optional instance of implementation of `FingerprintGenerator` that is used
+                to generate browser fingerprints together with consistent headers.
+            use_incognito_pages: By default pages share the same browser context. If set to True each page uses its
+                own context that is destroyed once the page is closed or crashes.
             kwargs: Additional arguments for default constructor.
         """
         plugin_options: dict = defaultdict(dict)
@@ -125,10 +132,16 @@ class BrowserPool:
         if headless is not None:
             plugin_options['browser_launch_options']['headless'] = headless
 
+        if use_incognito_pages is not None:
+            plugin_options['use_incognito_pages'] = use_incognito_pages
+
         if browser_type:
             plugin_options['browser_type'] = browser_type
 
-        plugin = PlaywrightBrowserPlugin(**plugin_options)
+        plugin = PlaywrightBrowserPlugin(
+            **plugin_options,
+            fingerprint_generator=fingerprint_generator,
+        )
         return cls(plugins=[plugin], **kwargs)
 
     @property
@@ -153,12 +166,12 @@ class BrowserPool:
 
     @property
     def total_pages_count(self) -> int:
-        """Returns the total number of pages opened since the browser pool was launched."""
+        """Return the total number of pages opened since the browser pool was launched."""
         return self._total_pages_count
 
     @property
     def active(self) -> bool:
-        """Indicates whether the context is active."""
+        """Indicate whether the context is active."""
         return self._active
 
     async def __aenter__(self) -> BrowserPool:
@@ -204,6 +217,8 @@ class BrowserPool:
 
         for browser in self._active_browsers + self._inactive_browsers:
             await browser.close(force=True)
+        self._active_browsers.clear()
+        self._inactive_browsers.clear()
 
         for plugin in self._plugins:
             await plugin.__aexit__(exc_type, exc_value, exc_traceback)
@@ -218,7 +233,7 @@ class BrowserPool:
         browser_plugin: BaseBrowserPlugin | None = None,
         proxy_info: ProxyInfo | None = None,
     ) -> CrawleePage:
-        """Opens a new page in a browser using the specified or a random browser plugin.
+        """Open a new page in a browser using the specified or a random browser plugin.
 
         Args:
             page_id: The ID to assign to the new page. If not provided, a random ID is generated.

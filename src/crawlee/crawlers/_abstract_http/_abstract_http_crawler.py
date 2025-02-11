@@ -5,15 +5,16 @@ from abc import ABC
 from typing import TYPE_CHECKING, Any, Callable, Generic
 
 from pydantic import ValidationError
-from typing_extensions import NotRequired, TypeVar
+from typing_extensions import NotRequired, TypedDict, TypeVar
 
-from crawlee import EnqueueStrategy
-from crawlee._request import BaseRequestData
+from crawlee import EnqueueStrategy, RequestTransformAction
+from crawlee._request import Request, RequestOptions
 from crawlee._utils.docs import docs_group
 from crawlee._utils.urls import convert_to_absolute_url, is_url_absolute
 from crawlee.crawlers._basic import BasicCrawler, BasicCrawlerOptions, ContextPipeline
 from crawlee.errors import SessionError
 from crawlee.http_clients import HttpxHttpClient
+from crawlee.statistics import StatisticsState
 
 from ._http_crawling_context import HttpCrawlingContext, ParsedHttpCrawlingContext, TParseResult
 
@@ -27,15 +28,10 @@ if TYPE_CHECKING:
     from ._abstract_http_parser import AbstractHttpParser
 
 TCrawlingContext = TypeVar('TCrawlingContext', bound=ParsedHttpCrawlingContext)
+TStatisticsState = TypeVar('TStatisticsState', bound=StatisticsState, default=StatisticsState)
 
 
-@docs_group('Data structures')
-class HttpCrawlerOptions(Generic[TCrawlingContext], BasicCrawlerOptions[TCrawlingContext]):
-    """Arguments for the `AbstractHttpCrawler` constructor.
-
-    It is intended for typing forwarded `__init__` arguments in the subclasses.
-    """
-
+class _HttpCrawlerAdditionalOptions(TypedDict):
     additional_http_error_status_codes: NotRequired[Iterable[int]]
     """Additional HTTP status codes to treat as errors, triggering automatic retries when encountered."""
 
@@ -43,8 +39,22 @@ class HttpCrawlerOptions(Generic[TCrawlingContext], BasicCrawlerOptions[TCrawlin
     """HTTP status codes that are typically considered errors but should be treated as successful responses."""
 
 
+@docs_group('Data structures')
+class HttpCrawlerOptions(
+    Generic[TCrawlingContext, TStatisticsState],
+    _HttpCrawlerAdditionalOptions,
+    BasicCrawlerOptions[TCrawlingContext, StatisticsState],
+):
+    """Arguments for the `AbstractHttpCrawler` constructor.
+
+    It is intended for typing forwarded `__init__` arguments in the subclasses.
+    """
+
+
 @docs_group('Abstract classes')
-class AbstractHttpCrawler(Generic[TCrawlingContext, TParseResult], BasicCrawler[TCrawlingContext], ABC):
+class AbstractHttpCrawler(
+    Generic[TCrawlingContext, TParseResult], BasicCrawler[TCrawlingContext, StatisticsState], ABC
+):
     """A web crawler for performing HTTP requests.
 
     The `AbstractHttpCrawler` builds on top of the `BasicCrawler`, inheriting all its features. Additionally,
@@ -65,7 +75,7 @@ class AbstractHttpCrawler(Generic[TCrawlingContext, TParseResult], BasicCrawler[
         parser: AbstractHttpParser[TParseResult],
         additional_http_error_status_codes: Iterable[int] = (),
         ignore_http_error_status_codes: Iterable[int] = (),
-        **kwargs: Unpack[BasicCrawlerOptions[TCrawlingContext]],
+        **kwargs: Unpack[BasicCrawlerOptions[TCrawlingContext, StatisticsState]],
     ) -> None:
         self._parser = parser
         self._pre_navigation_hooks: list[Callable[[BasicCrawlingContext], Awaitable[None]]] = []
@@ -86,6 +96,32 @@ class AbstractHttpCrawler(Generic[TCrawlingContext, TParseResult], BasicCrawler[
 
         kwargs.setdefault('_logger', logging.getLogger(__name__))
         super().__init__(**kwargs)
+
+    @classmethod
+    def create_parsed_http_crawler_class(
+        cls,
+        static_parser: AbstractHttpParser[TParseResult],
+    ) -> type[AbstractHttpCrawler[ParsedHttpCrawlingContext[TParseResult], TParseResult]]:
+        """Convenience class factory that creates specific version of `AbstractHttpCrawler` class.
+
+        In general typing sense two generic types of `AbstractHttpCrawler` do not have to be dependent on each other.
+        This is convenience constructor for specific cases when `TParseResult` is used to specify both generic
+        parameters in `AbstractHttpCrawler`.
+        """
+
+        class _ParsedHttpCrawler(AbstractHttpCrawler[ParsedHttpCrawlingContext[TParseResult], TParseResult]):
+            def __init__(
+                self,
+                parser: AbstractHttpParser[TParseResult] = static_parser,
+                **kwargs: Unpack[HttpCrawlerOptions[ParsedHttpCrawlingContext[TParseResult]]],
+            ) -> None:
+                kwargs['_context_pipeline'] = self._create_static_content_crawler_pipeline()
+                super().__init__(
+                    parser=parser,
+                    **kwargs,
+                )
+
+        return _ParsedHttpCrawler
 
     def _create_static_content_crawler_pipeline(self) -> ContextPipeline[ParsedHttpCrawlingContext[TParseResult]]:
         """Create static content crawler context pipeline with expected pipeline steps."""
@@ -140,20 +176,32 @@ class AbstractHttpCrawler(Generic[TCrawlingContext, TParseResult], BasicCrawler[
             selector: str = 'a',
             label: str | None = None,
             user_data: dict[str, Any] | None = None,
+            transform_request_function: Callable[[RequestOptions], RequestOptions | RequestTransformAction]
+            | None = None,
             **kwargs: Unpack[EnqueueLinksKwargs],
         ) -> None:
             kwargs.setdefault('strategy', EnqueueStrategy.SAME_HOSTNAME)
 
-            requests = list[BaseRequestData]()
-            user_data = user_data or {}
-            if label is not None:
-                user_data.setdefault('label', label)
+            requests = list[Request]()
+            base_user_data = user_data or {}
+
             for link in self._parser.find_links(parsed_content, selector=selector):
                 url = link
                 if not is_url_absolute(url):
-                    url = convert_to_absolute_url(context.request.url, url)
+                    base_url = context.request.loaded_url or context.request.url
+                    url = convert_to_absolute_url(base_url, url)
+
+                request_options = RequestOptions(url=url, user_data={**base_user_data}, label=label)
+
+                if transform_request_function:
+                    transform_request_options = transform_request_function(request_options)
+                    if transform_request_options == 'skip':
+                        continue
+                    if transform_request_options != 'unchanged':
+                        request_options = transform_request_options
+
                 try:
-                    request = BaseRequestData.from_url(url, user_data=user_data)
+                    request = Request.from_url(**request_options)
                 except ValidationError as exc:
                     context.log.debug(
                         f'Skipping URL "{url}" due to invalid format: {exc}. '

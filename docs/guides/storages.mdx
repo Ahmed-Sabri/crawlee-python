@@ -33,7 +33,7 @@ Crawlee offers multiple storage types for managing and persisting your crawling 
 Storage clients in Crawlee are subclasses of <ApiLink to="class/BaseStorageClient">`BaseStorageClient`</ApiLink>. They handle interactions with different storage backends. For instance:
 
 - <ApiLink to="class/MemoryStorageClient">`MemoryStorageClient`</ApiLink>: Stores data in memory and persists it to the local file system.
-- [`ApifyStorageClient`](https://docs.apify.com/sdk/python/reference/class/ApifyStorageClient): Manages storage on the [Apify Platform](https://apify.com). Apify storage client is implemented in the [Apify SDK](https://github.com/apify/apify-sdk-python).
+- [`ApifyStorageClient`](https://docs.apify.com/sdk/python/reference/class/ApifyStorageClient): Manages storage on the [Apify platform](https://apify.com). Apify storage client is implemented in the [Apify SDK](https://github.com/apify/apify-sdk-python).
 
 Each storage client is responsible for maintaining the storages in a specific environment. This abstraction makes it easier to switch between different environments, e.g. between local development and cloud production setup.
 
@@ -52,7 +52,7 @@ where:
 - `{STORAGE_ID}`: The ID of the specific storage instance (default: `default`).
 
 :::info NOTE
-The current <ApiLink to="class/MemoryStorageClient">`MemoryStorageClient`</ApiLink> and its interface is quite old and not great. We plan to refactor it, together with the whole <ApiLink to="class/BaseStorageClient">`BaseStorageClient`</ApiLink> interface in the near future and it better and and easier to use. We also plan to introduce new storage clients for different storage backends - e.g. for [SQLLite](https://www.sqlite.org/).
+The current <ApiLink to="class/MemoryStorageClient">`MemoryStorageClient`</ApiLink> and its interface is quite old and not great. We plan to refactor it, together with the whole <ApiLink to="class/BaseStorageClient">`BaseStorageClient`</ApiLink> interface in the near future and it better and and easier to use. We also plan to introduce new storage clients for different storage backends - e.g. for [SQLLite](https://sqlite.org/).
 :::
 
 You can override default storage IDs using these environment variables: `CRAWLEE_DEFAULT_DATASET_ID`, `CRAWLEE_DEFAULT_KEY_VALUE_STORE_ID`, or `CRAWLEE_DEFAULT_REQUEST_QUEUE_ID`.
@@ -60,6 +60,16 @@ You can override default storage IDs using these environment variables: `CRAWLEE
 ## Request queue
 
 The <ApiLink to="class/RequestQueue">`RequestQueue`</ApiLink> is the primary storage for URLs in Crawlee, especially useful for deep crawling. It supports dynamic addition and removal of URLs, making it ideal for recursive tasks where URLs are discovered and added during the crawling process (e.g., following links across multiple pages). Each Crawlee project has a **default request queue**, which can be used to store URLs during a specific run. The <ApiLink to="class/RequestQueue">`RequestQueue`</ApiLink> is highly useful for large-scale and complex crawls.
+
+By default, data are stored using the following path structure:
+
+```text
+{CRAWLEE_STORAGE_DIR}/request_queues/{QUEUE_ID}/{INDEX}.json
+```
+
+- `{CRAWLEE_STORAGE_DIR}`: The root directory for all storage data, specified by the environment variable.
+- `{QUEUE_ID}`: The ID of the request queue, "default" by default.
+- `{INDEX}`: Represents the zero-based index of the record within the queue.
 
 The following code demonstrates the usage of the <ApiLink to="class/RequestQueue">`RequestQueue`</ApiLink>:
 
@@ -107,7 +117,7 @@ The <ApiLink to="class/RequestQueue">`RequestQueue`</ApiLink> implements the <Ap
 
 If you need custom functionality, you can create your own request storage by subclassing the <ApiLink to="class/RequestManager">`RequestManager`</ApiLink> class and implementing its required methods.
 
-For a detailed explanation of the <ApiLink to="class/RequestManager">`RequestManager`</ApiLink> and other related components, refer to the [Request loaders guide](https://www.crawlee.dev/python/docs/guides/request-loaders).
+For a detailed explanation of the <ApiLink to="class/RequestManager">`RequestManager`</ApiLink> and other related components, refer to the [Request loaders guide](https://crawlee.dev/python/docs/guides/request-loaders).
 
 ## Dataset
 
