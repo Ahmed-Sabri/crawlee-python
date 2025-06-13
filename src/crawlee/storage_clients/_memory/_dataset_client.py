@@ -14,7 +14,7 @@ from crawlee._types import StorageTypes
 from crawlee._utils.crypto import crypto_random_object_id
 from crawlee._utils.data_processing import raise_on_duplicate_storage, raise_on_non_existing_storage
 from crawlee._utils.file import force_rename, json_dumps
-from crawlee.storage_clients._base import BaseDatasetClient
+from crawlee.storage_clients._base import DatasetClient as BaseDatasetClient
 from crawlee.storage_clients.models import DatasetItemsListPage, DatasetMetadata
 
 from ._creation_management import find_or_create_client_by_id_or_name_inner
@@ -332,7 +332,7 @@ class DatasetClient(BaseDatasetClient):
         entity_directory: str,
         persist_storage: bool,
     ) -> None:
-        """Writes dataset items to the disk.
+        """Write dataset items to the disk.
 
         The function iterates over a list of dataset items, each represented as a tuple of an identifier
         and a dictionary, and writes them as individual JSON files in a specified directory. The function

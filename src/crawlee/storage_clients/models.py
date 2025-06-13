@@ -16,10 +16,14 @@ from crawlee._utils.urls import validate_http_url
 KvsValueType = TypeVar('KvsValueType', default=Any)
 
 
-class _BaseStorageMetadata(BaseModel):
-    """Base model for storage metadata."""
+@docs_group('Data structures')
+class StorageMetadata(BaseModel):
+    """Represents the base model for storage metadata.
 
-    model_config = ConfigDict(populate_by_name=True)
+    It contains common fields shared across all specific storage types.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra='allow')
 
     id: Annotated[str, Field(alias='id')]
     name: Annotated[str | None, Field(alias='name', default='')]
@@ -29,7 +33,7 @@ class _BaseStorageMetadata(BaseModel):
 
 
 @docs_group('Data structures')
-class DatasetMetadata(_BaseStorageMetadata):
+class DatasetMetadata(StorageMetadata):
     """Model for a dataset metadata."""
 
     model_config = ConfigDict(populate_by_name=True)
@@ -38,7 +42,7 @@ class DatasetMetadata(_BaseStorageMetadata):
 
 
 @docs_group('Data structures')
-class KeyValueStoreMetadata(_BaseStorageMetadata):
+class KeyValueStoreMetadata(StorageMetadata):
     """Model for a key-value store metadata."""
 
     model_config = ConfigDict(populate_by_name=True)
@@ -47,7 +51,7 @@ class KeyValueStoreMetadata(_BaseStorageMetadata):
 
 
 @docs_group('Data structures')
-class RequestQueueMetadata(_BaseStorageMetadata):
+class RequestQueueMetadata(StorageMetadata):
     """Model for a request queue metadata."""
 
     model_config = ConfigDict(populate_by_name=True)
@@ -137,9 +141,10 @@ class RequestQueueHeadWithLocks(RequestQueueHead):
     """Model for request queue head with locks."""
 
     lock_secs: Annotated[int, Field(alias='lockSecs')]
+    queue_has_locked_requests: Annotated[bool | None, Field(alias='queueHasLockedRequests')] = None
 
 
-class _BaseListPage(BaseModel):
+class _ListPage(BaseModel):
     """Model for a single page of storage items returned from a collection list method."""
 
     model_config = ConfigDict(populate_by_name=True)
@@ -161,7 +166,7 @@ class _BaseListPage(BaseModel):
 
 
 @docs_group('Data structures')
-class DatasetListPage(_BaseListPage):
+class DatasetListPage(_ListPage):
     """Model for a single page of dataset items returned from a collection list method."""
 
     items: Annotated[list[DatasetMetadata], Field(default_factory=list)]
@@ -169,7 +174,7 @@ class DatasetListPage(_BaseListPage):
 
 
 @docs_group('Data structures')
-class KeyValueStoreListPage(_BaseListPage):
+class KeyValueStoreListPage(_ListPage):
     """Model for a single page of key-value store items returned from a collection list method."""
 
     items: Annotated[list[KeyValueStoreMetadata], Field(default_factory=list)]
@@ -177,7 +182,7 @@ class KeyValueStoreListPage(_BaseListPage):
 
 
 @docs_group('Data structures')
-class RequestQueueListPage(_BaseListPage):
+class RequestQueueListPage(_ListPage):
     """Model for a single page of request queue items returned from a collection list method."""
 
     items: Annotated[list[RequestQueueMetadata], Field(default_factory=list)]
@@ -185,7 +190,7 @@ class RequestQueueListPage(_BaseListPage):
 
 
 @docs_group('Data structures')
-class DatasetItemsListPage(_BaseListPage):
+class DatasetItemsListPage(_ListPage):
     """Model for a single page of dataset items returned from a collection list method."""
 
     items: Annotated[list[dict], Field(default_factory=list)]
@@ -219,7 +224,7 @@ class UnprocessedRequest(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    unique_key: Annotated[str, Field(alias='requestUniqueKey')]
+    unique_key: Annotated[str, Field(alias='uniqueKey')]
     url: Annotated[str, BeforeValidator(validate_http_url), Field()]
     method: Annotated[HttpMethod | None, Field()] = None
 

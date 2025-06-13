@@ -8,10 +8,10 @@ import ApiLink from '@site/src/components/ApiLink';
 
 import CodeBlock from '@theme/CodeBlock';
 
-import LogWithConfigExample from '!!raw-loader!./code/apify/log_with_config_example.py';
-import CrawlerAsActorExample from '!!raw-loader!./code/apify/crawler_as_actor_example.py';
-import ProxyExample from '!!raw-loader!./code/apify/proxy_example.py';
-import ProxyAdvancedExample from '!!raw-loader!./code/apify/proxy_advanced_example.py';
+import LogWithConfigExample from '!!raw-loader!./code_examples/apify/log_with_config_example.py';
+import CrawlerAsActorExample from '!!raw-loader!./code_examples/apify/crawler_as_actor_example.py';
+import ProxyExample from '!!raw-loader!./code_examples/apify/proxy_example.py';
+import ProxyAdvancedExample from '!!raw-loader!./code_examples/apify/proxy_advanced_example.py';
 
 Apify is a [platform](https://apify.com) built to serve large-scale and high-performance web scraping and automation needs. It provides easy access to [compute instances (Actors)](#what-is-an-actor), convenient request and result storages, [proxies](../guides/proxy-management), scheduling, webhooks and [more](https://docs.apify.com/), accessible through a [web interface](https://console.apify.com) or an [API](https://docs.apify.com/api).
 
@@ -22,6 +22,18 @@ While we think that the Apify platform is super cool, and it's definitely worth 
 We do not test Crawlee in other cloud environments such as Lambda or on specific architectures such as Raspberry PI. We strive to make it work, but there are no guarantees.
 
 :::
+
+## Requirements
+
+To run your Crawlee code on Apify platform, you need an Apify account. If you don't have one yet, you can sign up [here](https://console.apify.com/sign-up).
+
+Additionally, you must have the [Apify CLI](https://docs.apify.com/cli/) installed on your computer. For installation instructions, refer to the [Installation guide](https://docs.apify.com/cli/docs/installation).
+
+Finally, ensure that the [Apify SDK] (https://docs.apify.com/sdk/python/) is installed in your project. You can install it using `pip`:
+
+```bash
+pip install apify
+```
 
 ## Logging into Apify platform from Crawlee
 

@@ -1,29 +1,30 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC
 from typing import TYPE_CHECKING, Any, Callable, Generic
 
+from more_itertools import partition
 from pydantic import ValidationError
-from typing_extensions import NotRequired, TypedDict, TypeVar
+from typing_extensions import TypeVar
 
-from crawlee import EnqueueStrategy, RequestTransformAction
 from crawlee._request import Request, RequestOptions
 from crawlee._utils.docs import docs_group
-from crawlee._utils.urls import convert_to_absolute_url, is_url_absolute
+from crawlee._utils.urls import to_absolute_url_iterator
 from crawlee.crawlers._basic import BasicCrawler, BasicCrawlerOptions, ContextPipeline
 from crawlee.errors import SessionError
-from crawlee.http_clients import HttpxHttpClient
 from crawlee.statistics import StatisticsState
 
-from ._http_crawling_context import HttpCrawlingContext, ParsedHttpCrawlingContext, TParseResult
+from ._http_crawling_context import HttpCrawlingContext, ParsedHttpCrawlingContext, TParseResult, TSelectResult
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Iterable
+    from collections.abc import AsyncGenerator, Awaitable, Iterator
 
     from typing_extensions import Unpack
 
-    from crawlee._types import BasicCrawlingContext, EnqueueLinksFunction, EnqueueLinksKwargs
+    from crawlee import RequestTransformAction
+    from crawlee._types import BasicCrawlingContext, EnqueueLinksKwargs, ExtractLinksFunction
 
     from ._abstract_http_parser import AbstractHttpParser
 
@@ -31,35 +32,15 @@ TCrawlingContext = TypeVar('TCrawlingContext', bound=ParsedHttpCrawlingContext)
 TStatisticsState = TypeVar('TStatisticsState', bound=StatisticsState, default=StatisticsState)
 
 
-class _HttpCrawlerAdditionalOptions(TypedDict):
-    additional_http_error_status_codes: NotRequired[Iterable[int]]
-    """Additional HTTP status codes to treat as errors, triggering automatic retries when encountered."""
-
-    ignore_http_error_status_codes: NotRequired[Iterable[int]]
-    """HTTP status codes that are typically considered errors but should be treated as successful responses."""
-
-
-@docs_group('Data structures')
-class HttpCrawlerOptions(
-    Generic[TCrawlingContext, TStatisticsState],
-    _HttpCrawlerAdditionalOptions,
-    BasicCrawlerOptions[TCrawlingContext, StatisticsState],
-):
-    """Arguments for the `AbstractHttpCrawler` constructor.
-
-    It is intended for typing forwarded `__init__` arguments in the subclasses.
-    """
-
-
 @docs_group('Abstract classes')
 class AbstractHttpCrawler(
-    Generic[TCrawlingContext, TParseResult], BasicCrawler[TCrawlingContext, StatisticsState], ABC
+    Generic[TCrawlingContext, TParseResult, TSelectResult], BasicCrawler[TCrawlingContext, StatisticsState], ABC
 ):
     """A web crawler for performing HTTP requests.
 
     The `AbstractHttpCrawler` builds on top of the `BasicCrawler`, inheriting all its features. Additionally,
     it implements HTTP communication using HTTP clients. The class allows integration with any HTTP client
-    that implements the `BaseHttpClient` interface, provided as an input parameter to the constructor.
+    that implements the `HttpClient` interface, provided as an input parameter to the constructor.
 
     `AbstractHttpCrawler` is a generic class intended to be used with a specific parser for parsing HTTP responses
     and the expected type of `TCrawlingContext` available to the user function. Examples of specific versions include
@@ -72,21 +53,11 @@ class AbstractHttpCrawler(
     def __init__(
         self,
         *,
-        parser: AbstractHttpParser[TParseResult],
-        additional_http_error_status_codes: Iterable[int] = (),
-        ignore_http_error_status_codes: Iterable[int] = (),
+        parser: AbstractHttpParser[TParseResult, TSelectResult],
         **kwargs: Unpack[BasicCrawlerOptions[TCrawlingContext, StatisticsState]],
     ) -> None:
         self._parser = parser
         self._pre_navigation_hooks: list[Callable[[BasicCrawlingContext], Awaitable[None]]] = []
-
-        kwargs.setdefault(
-            'http_client',
-            HttpxHttpClient(
-                additional_http_error_status_codes=additional_http_error_status_codes,
-                ignore_http_error_status_codes=ignore_http_error_status_codes,
-            ),
-        )
 
         if '_context_pipeline' not in kwargs:
             raise ValueError(
@@ -94,26 +65,28 @@ class AbstractHttpCrawler(
                 'AbstractHttpCrawler._create_static_content_crawler_pipeline() method to initialize it.'
             )
 
-        kwargs.setdefault('_logger', logging.getLogger(__name__))
+        kwargs.setdefault('_logger', logging.getLogger(self.__class__.__name__))
         super().__init__(**kwargs)
 
     @classmethod
     def create_parsed_http_crawler_class(
         cls,
-        static_parser: AbstractHttpParser[TParseResult],
-    ) -> type[AbstractHttpCrawler[ParsedHttpCrawlingContext[TParseResult], TParseResult]]:
-        """Convenience class factory that creates specific version of `AbstractHttpCrawler` class.
+        static_parser: AbstractHttpParser[TParseResult, TSelectResult],
+    ) -> type[AbstractHttpCrawler[ParsedHttpCrawlingContext[TParseResult], TParseResult, TSelectResult]]:
+        """Create a specific version of `AbstractHttpCrawler` class.
 
-        In general typing sense two generic types of `AbstractHttpCrawler` do not have to be dependent on each other.
-        This is convenience constructor for specific cases when `TParseResult` is used to specify both generic
-        parameters in `AbstractHttpCrawler`.
+        This is a convenience factory method for creating a specific `AbstractHttpCrawler` subclass.
+        While `AbstractHttpCrawler` allows its two generic parameters to be independent,
+        this method simplifies cases where `TParseResult` is used for both generic parameters.
         """
 
-        class _ParsedHttpCrawler(AbstractHttpCrawler[ParsedHttpCrawlingContext[TParseResult], TParseResult]):
+        class _ParsedHttpCrawler(
+            AbstractHttpCrawler[ParsedHttpCrawlingContext[TParseResult], TParseResult, TSelectResult]
+        ):
             def __init__(
                 self,
-                parser: AbstractHttpParser[TParseResult] = static_parser,
-                **kwargs: Unpack[HttpCrawlerOptions[ParsedHttpCrawlingContext[TParseResult]]],
+                parser: AbstractHttpParser[TParseResult, TSelectResult] = static_parser,
+                **kwargs: Unpack[BasicCrawlerOptions[ParsedHttpCrawlingContext[TParseResult]]],
             ) -> None:
                 kwargs['_context_pipeline'] = self._create_static_content_crawler_pipeline()
                 super().__init__(
@@ -129,8 +102,9 @@ class AbstractHttpCrawler(
             ContextPipeline()
             .compose(self._execute_pre_navigation_hooks)
             .compose(self._make_http_request)
+            .compose(self._handle_status_code_response)
             .compose(self._parse_http_response)
-            .compose(self._handle_blocked_request)
+            .compose(self._handle_blocked_request_by_content)
         )
 
     async def _execute_pre_navigation_hooks(
@@ -152,26 +126,28 @@ class AbstractHttpCrawler(
             The original crawling context enhanced by the parsing result and enqueue links function.
         """
         parsed_content = await self._parser.parse(context.http_response)
+        extract_links = self._create_extract_links_function(context, parsed_content)
         yield ParsedHttpCrawlingContext.from_http_crawling_context(
             context=context,
             parsed_content=parsed_content,
-            enqueue_links=self._create_enqueue_links_function(context, parsed_content),
+            enqueue_links=self._create_enqueue_links_function(context, extract_links),
+            extract_links=extract_links,
         )
 
-    def _create_enqueue_links_function(
+    def _create_extract_links_function(
         self, context: HttpCrawlingContext, parsed_content: TParseResult
-    ) -> EnqueueLinksFunction:
-        """Create a callback function for extracting links from parsed content and enqueuing them to the crawl.
+    ) -> ExtractLinksFunction:
+        """Create a callback function for extracting links from parsed content.
 
         Args:
             context: The current crawling context.
             parsed_content: The parsed http response.
 
         Returns:
-            Awaitable that is used for extracting links from parsed content and enqueuing them to the crawl.
+            Awaitable that is used for extracting links from parsed content.
         """
 
-        async def enqueue_links(
+        async def extract_links(
             *,
             selector: str = 'a',
             label: str | None = None,
@@ -179,18 +155,24 @@ class AbstractHttpCrawler(
             transform_request_function: Callable[[RequestOptions], RequestOptions | RequestTransformAction]
             | None = None,
             **kwargs: Unpack[EnqueueLinksKwargs],
-        ) -> None:
-            kwargs.setdefault('strategy', EnqueueStrategy.SAME_HOSTNAME)
-
+        ) -> list[Request]:
             requests = list[Request]()
+
             base_user_data = user_data or {}
 
-            for link in self._parser.find_links(parsed_content, selector=selector):
-                url = link
-                if not is_url_absolute(url):
-                    base_url = context.request.loaded_url or context.request.url
-                    url = convert_to_absolute_url(base_url, url)
+            robots_txt_file = await self._get_robots_txt_file_for_url(context.request.url)
 
+            kwargs.setdefault('strategy', 'same-hostname')
+
+            links_iterator: Iterator[str] = iter(self._parser.find_links(parsed_content, selector=selector))
+            links_iterator = to_absolute_url_iterator(context.request.loaded_url or context.request.url, links_iterator)
+
+            if robots_txt_file:
+                skipped, links_iterator = partition(lambda url: robots_txt_file.is_allowed(url), links_iterator)
+            else:
+                skipped = iter([])
+
+            for url in self._enqueue_links_filter_iterator(links_iterator, context.request.url, **kwargs):
                 request_options = RequestOptions(url=url, user_data={**base_user_data}, label=label)
 
                 if transform_request_function:
@@ -212,9 +194,14 @@ class AbstractHttpCrawler(
 
                 requests.append(request)
 
-            await context.add_requests(requests, **kwargs)
+            skipped_tasks = [
+                asyncio.create_task(self._handle_skipped_request(request, 'robots_txt')) for request in skipped
+            ]
+            await asyncio.gather(*skipped_tasks)
 
-        return enqueue_links
+            return requests
+
+        return extract_links
 
     async def _make_http_request(self, context: BasicCrawlingContext) -> AsyncGenerator[HttpCrawlingContext, None]:
         """Make http request and create context enhanced by HTTP response.
@@ -234,10 +221,32 @@ class AbstractHttpCrawler(
 
         yield HttpCrawlingContext.from_basic_crawling_context(context=context, http_response=result.http_response)
 
-    async def _handle_blocked_request(
+    async def _handle_status_code_response(
+        self, context: HttpCrawlingContext
+    ) -> AsyncGenerator[HttpCrawlingContext, None]:
+        """Validate the HTTP status code and raise appropriate exceptions if needed.
+
+        Args:
+            context: The current crawling context containing the HTTP response.
+
+        Raises:
+            SessionError: If the status code indicates the session is blocked.
+            HttpStatusCodeError: If the status code represents a server error or is explicitly configured as an error.
+            HttpClientStatusCodeError: If the status code represents a client error.
+
+        Yields:
+            The original crawling context if no errors are detected.
+        """
+        status_code = context.http_response.status_code
+        if self._retry_on_blocked:
+            self._raise_for_session_blocked_status_code(context.session, status_code)
+        self._raise_for_error_status_code(status_code)
+        yield context
+
+    async def _handle_blocked_request_by_content(
         self, context: ParsedHttpCrawlingContext[TParseResult]
     ) -> AsyncGenerator[ParsedHttpCrawlingContext[TParseResult], None]:
-        """Try to detect if the request is blocked based on the HTTP status code or the parsed response content.
+        """Try to detect if the request is blocked based on the parsed response content.
 
         Args:
             context: The current crawling context.
@@ -246,14 +255,10 @@ class AbstractHttpCrawler(
             SessionError: If the request is considered blocked.
 
         Yields:
-            The original crawling context if no errors are detected.
+            The original crawling context if no blocking is detected.
         """
-        if self._retry_on_blocked:
-            status_code = context.http_response.status_code
-            if self._is_session_blocked_status_code(context.session, status_code):
-                raise SessionError(f'Assuming the session is blocked based on HTTP status code {status_code}')
-            if blocked_info := self._parser.is_blocked(context.parsed_content):
-                raise SessionError(blocked_info.reason)
+        if self._retry_on_blocked and (blocked_info := self._parser.is_blocked(context.parsed_content)):
+            raise SessionError(blocked_info.reason)
         yield context
 
     def pre_navigation_hook(self, hook: Callable[[BasicCrawlingContext], Awaitable[None]]) -> None:

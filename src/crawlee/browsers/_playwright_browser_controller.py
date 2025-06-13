@@ -6,19 +6,18 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, cast
 
 from browserforge.injectors.playwright import AsyncNewContext
-from playwright.async_api import BrowserContext, Page, ProxySettings
+from playwright.async_api import Browser, BrowserContext, Page, ProxySettings
 from typing_extensions import override
 
 from crawlee._utils.docs import docs_group
-from crawlee.browsers._base_browser_controller import BaseBrowserController
-from crawlee.browsers._types import BrowserType
+from crawlee.browsers._browser_controller import BrowserController
 from crawlee.fingerprint_suite import HeaderGenerator
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from playwright.async_api import Browser
-
+    from crawlee.browsers._playwright_browser import PlaywrightPersistentBrowser
+    from crawlee.browsers._types import BrowserType
     from crawlee.fingerprint_suite import FingerprintGenerator
     from crawlee.proxy_configuration import ProxyInfo
 
@@ -28,7 +27,7 @@ logger = getLogger(__name__)
 
 
 @docs_group('Classes')
-class PlaywrightBrowserController(BaseBrowserController):
+class PlaywrightBrowserController(BrowserController):
     """Controller for managing Playwright browser instances and their pages.
 
     It provides methods to control browser instances, manage their pages, and handle context-specific
@@ -40,14 +39,14 @@ class PlaywrightBrowserController(BaseBrowserController):
 
     def __init__(
         self,
-        browser: Browser,
+        browser: Browser | PlaywrightPersistentBrowser,
         *,
         max_open_pages_per_browser: int = 20,
         use_incognito_pages: bool = False,
         header_generator: HeaderGenerator | None = _DEFAULT_HEADER_GENERATOR,
         fingerprint_generator: FingerprintGenerator | None = None,
     ) -> None:
-        """A default constructor.
+        """Initialize a new instance.
 
         Args:
             browser: The browser instance to control.
@@ -108,7 +107,7 @@ class PlaywrightBrowserController(BaseBrowserController):
     @property
     @override
     def browser_type(self) -> BrowserType:
-        return cast(BrowserType, self._browser.browser_type.name)
+        return cast('BrowserType', self._browser.browser_type.name)
 
     @override
     async def new_page(
@@ -210,15 +209,25 @@ class PlaywrightBrowserController(BaseBrowserController):
 
         if self._fingerprint_generator:
             return await AsyncNewContext(
-                browser=self._browser, fingerprint=self._fingerprint_generator.generate(), **browser_new_context_options
+                browser=self._browser,
+                fingerprint=self._fingerprint_generator.generate(),
+                **browser_new_context_options,
             )
 
         if self._header_generator:
-            common_headers = self._header_generator.get_common_headers()
-            sec_ch_ua_headers = self._header_generator.get_sec_ch_ua_headers(browser_type=self.browser_type)
-            user_agent_header = self._header_generator.get_user_agent_header(browser_type=self.browser_type)
-            headers = dict(common_headers | sec_ch_ua_headers | user_agent_header)
-            extra_http_headers = headers
+            extra_http_headers = dict(
+                self._header_generator.get_specific_headers(
+                    header_names={
+                        'Accept',
+                        'Accept-Language',
+                        'User-Agent',
+                        'sec-ch-ua',
+                        'sec-ch-ua-mobile',
+                        'sec-ch-ua-platform',
+                    },
+                    browser_type=self.browser_type,
+                )
+            )
         else:
             extra_http_headers = None
 

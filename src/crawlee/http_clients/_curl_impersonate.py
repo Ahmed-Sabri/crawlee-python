@@ -2,31 +2,24 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Optional
 
-from crawlee._utils.docs import docs_group
-
-try:
-    from curl_cffi import CurlInfo
-    from curl_cffi.requests import AsyncSession
-    from curl_cffi.requests.cookies import Cookies, CurlMorsel
-    from curl_cffi.requests.exceptions import ProxyError as CurlProxyError
-    from curl_cffi.requests.exceptions import RequestException as CurlRequestError
-    from curl_cffi.requests.impersonate import DEFAULT_CHROME as CURL_DEFAULT_CHROME
-except ImportError as exc:
-    raise ImportError(
-        "To import this, you need to install the 'curl-impersonate' extra. "
-        "For example, if you use pip, run `pip install 'crawlee[curl-impersonate]'`.",
-    ) from exc
-
+from curl_cffi import CurlInfo
 from curl_cffi.const import CurlHttpVersion
+from curl_cffi.requests import AsyncSession
+from curl_cffi.requests.cookies import Cookies as CurlCookies
+from curl_cffi.requests.cookies import CurlMorsel
+from curl_cffi.requests.exceptions import ProxyError as CurlProxyError
+from curl_cffi.requests.exceptions import RequestException as CurlRequestError
+from curl_cffi.requests.impersonate import DEFAULT_CHROME as CURL_DEFAULT_CHROME
 from typing_extensions import override
 
 from crawlee._types import HttpHeaders, HttpPayload
 from crawlee._utils.blocked import ROTATE_PROXY_ERRORS
+from crawlee._utils.docs import docs_group
 from crawlee.errors import ProxyError
-from crawlee.http_clients import BaseHttpClient, HttpCrawlingResult, HttpResponse
+from crawlee.http_clients import HttpClient, HttpCrawlingResult, HttpResponse
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from http.cookiejar import Cookie
 
     from curl_cffi import Curl
     from curl_cffi.requests import Request as CurlRequest
@@ -39,7 +32,7 @@ if TYPE_CHECKING:
     from crawlee.statistics import Statistics
 
 
-class _EmptyCookies(Cookies):
+class _EmptyCookies(CurlCookies):
     @override
     def get_cookies_for_curl(self, request: CurlRequest) -> list[CurlMorsel]:
         return []
@@ -47,6 +40,13 @@ class _EmptyCookies(Cookies):
     @override
     def update_cookies_from_curl(self, morsels: list[CurlMorsel]) -> None:
         return None
+
+
+class _AsyncSession(AsyncSession):
+    @override
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._cookies = _EmptyCookies()
 
 
 class _CurlImpersonateResponse:
@@ -80,20 +80,20 @@ class _CurlImpersonateResponse:
 
     @property
     def headers(self) -> HttpHeaders:
-        return HttpHeaders(dict(self._response.headers))
+        return HttpHeaders({key: value for key, value in self._response.headers.items() if value})
 
     def read(self) -> bytes:
         return self._response.content
 
 
 @docs_group('Classes')
-class CurlImpersonateHttpClient(BaseHttpClient):
+class CurlImpersonateHttpClient(HttpClient):
     """HTTP client based on the `curl-cffi` library.
 
     This client uses the `curl-cffi` library to perform HTTP requests in crawlers (`BasicCrawler` subclasses)
     and to manage sessions, proxies, and error handling.
 
-    See the `BaseHttpClient` class for more common information about HTTP clients.
+    See the `HttpClient` class for more common information about HTTP clients.
 
     ### Usage
 
@@ -110,22 +110,16 @@ class CurlImpersonateHttpClient(BaseHttpClient):
         self,
         *,
         persist_cookies_per_session: bool = True,
-        additional_http_error_status_codes: Iterable[int] = (),
-        ignore_http_error_status_codes: Iterable[int] = (),
         **async_session_kwargs: Any,
     ) -> None:
-        """A default constructor.
+        """Initialize a new instance.
 
         Args:
             persist_cookies_per_session: Whether to persist cookies per HTTP session.
-            additional_http_error_status_codes: Additional HTTP status codes to treat as errors.
-            ignore_http_error_status_codes: HTTP status codes to ignore as errors.
             async_session_kwargs: Additional keyword arguments for `curl_cffi.requests.AsyncSession`.
         """
         super().__init__(
             persist_cookies_per_session=persist_cookies_per_session,
-            additional_http_error_status_codes=additional_http_error_status_codes,
-            ignore_http_error_status_codes=ignore_http_error_status_codes,
         )
         self._async_session_kwargs = async_session_kwargs
 
@@ -148,8 +142,7 @@ class CurlImpersonateHttpClient(BaseHttpClient):
                 method=request.method.upper(),  # type: ignore[arg-type] # curl-cffi requires uppercase method
                 headers=request.headers,
                 data=request.payload,
-                cookies=session.cookies if session else None,
-                allow_redirects=True,
+                cookies=session.cookies.jar if session else None,
             )
         except CurlRequestError as exc:
             if self._is_proxy_error(exc):
@@ -159,15 +152,9 @@ class CurlImpersonateHttpClient(BaseHttpClient):
         if statistics:
             statistics.register_status_code(response.status_code)
 
-        self._raise_for_error_status_code(
-            response.status_code,
-            self._additional_http_error_status_codes,
-            self._ignore_http_error_status_codes,
-        )
-
         if self._persist_cookies_per_session and session and response.curl:
             response_cookies = self._get_cookies(response.curl)
-            session.cookies.update(response_cookies)
+            session.cookies.store_cookies(response_cookies)
 
         request.loaded_url = response.url
 
@@ -198,32 +185,25 @@ class CurlImpersonateHttpClient(BaseHttpClient):
                 method=method.upper(),  # type: ignore[arg-type] # curl-cffi requires uppercase method
                 headers=dict(headers) if headers else None,
                 data=payload,
-                cookies=session.cookies if session else None,
-                allow_redirects=True,
+                cookies=session.cookies.jar if session else None,
             )
         except CurlRequestError as exc:
             if self._is_proxy_error(exc):
                 raise ProxyError from exc
             raise
 
-        self._raise_for_error_status_code(
-            response.status_code,
-            self._additional_http_error_status_codes,
-            self._ignore_http_error_status_codes,
-        )
-
         if self._persist_cookies_per_session and session and response.curl:
             response_cookies = self._get_cookies(response.curl)
-            session.cookies.update(response_cookies)
+            session.cookies.store_cookies(response_cookies)
 
         return _CurlImpersonateResponse(response)
 
     def _get_client(self, proxy_url: str | None) -> AsyncSession:
-        """Helper to get a HTTP client for the given proxy URL.
+        """Retrieve or create an asynchronous HTTP session for the given proxy URL.
 
-        The method checks if an `AsyncSession` already exists for the provided proxy URL. If no session exists,
-        it creates a new one, configured with the specified proxy and additional session options. The new session
-        is then stored for future use.
+        Check if an `AsyncSession` already exists for the specified proxy URL. If no session is found,
+        create a new one with the provided proxy settings and additional session options.
+        Store the new session for future use.
         """
         # Check if a session for the given proxy URL has already been created.
         if proxy_url not in self._client_by_proxy_url:
@@ -238,14 +218,17 @@ class CurlImpersonateHttpClient(BaseHttpClient):
             kwargs.update(self._async_session_kwargs)
 
             # Create and store the new session with the specified kwargs.
-            self._client_by_proxy_url[proxy_url] = AsyncSession(**kwargs)
-            self._client_by_proxy_url[proxy_url].cookies = _EmptyCookies()
+            self._client_by_proxy_url[proxy_url] = _AsyncSession(**kwargs)
 
         return self._client_by_proxy_url[proxy_url]
 
     @staticmethod
     def _is_proxy_error(error: CurlRequestError) -> bool:
-        """Helper to check whether the given error is a proxy-related error."""
+        """Determine whether the given error is related to a proxy issue.
+
+        Check if the error message contains known proxy-related error keywords or if it is an instance
+        of `CurlProxyError`.
+        """
         if any(needle in str(error) for needle in ROTATE_PROXY_ERRORS):
             return True
 
@@ -255,9 +238,10 @@ class CurlImpersonateHttpClient(BaseHttpClient):
         return False
 
     @staticmethod
-    def _get_cookies(curl: Curl) -> dict[str, str]:
-        cookies = {}
+    def _get_cookies(curl: Curl) -> list[Cookie]:
+        cookies: list[Cookie] = []
         for curl_cookie in curl.getinfo(CurlInfo.COOKIELIST):  # type: ignore[union-attr]
             curl_morsel = CurlMorsel.from_curl_format(curl_cookie)  # type: ignore[arg-type]
-            cookies[curl_morsel.name] = curl_morsel.value
+            cookie = curl_morsel.to_cookiejar_cookie()
+            cookies.append(cookie)
         return cookies

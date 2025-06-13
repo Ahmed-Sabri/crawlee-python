@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import logging
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal, TextIO, TypedDict, cast
 
 from typing_extensions import NotRequired, Required, Unpack, override
@@ -12,9 +13,9 @@ from crawlee import service_locator
 from crawlee._utils.byte_size import ByteSize
 from crawlee._utils.docs import docs_group
 from crawlee._utils.file import json_dumps
-from crawlee.storage_clients.models import DatasetMetadata
+from crawlee.storage_clients.models import DatasetMetadata, StorageMetadata
 
-from ._base_storage import BaseStorage
+from ._base import Storage
 from ._key_value_store import KeyValueStore
 
 if TYPE_CHECKING:
@@ -22,7 +23,7 @@ if TYPE_CHECKING:
 
     from crawlee._types import JsonSerializable, PushDataKwargs
     from crawlee.configuration import Configuration
-    from crawlee.storage_clients import BaseStorageClient
+    from crawlee.storage_clients import StorageClient
     from crawlee.storage_clients.models import DatasetItemsListPage
 
 logger = logging.getLogger(__name__)
@@ -32,7 +33,7 @@ class GetDataKwargs(TypedDict):
     """Keyword arguments for dataset's `get_data` method."""
 
     offset: NotRequired[int]
-    """Skips the specified number of items at the start."""
+    """Skip the specified number of items at the start."""
 
     limit: NotRequired[int]
     """The maximum number of items to retrieve. Unlimited if None."""
@@ -50,19 +51,19 @@ class GetDataKwargs(TypedDict):
     """Fields to exclude from each item."""
 
     unwind: NotRequired[str]
-    """Unwinds items by a specified array field, turning each element into a separate item."""
+    """Unwind items by a specified array field, turning each element into a separate item."""
 
     skip_empty: NotRequired[bool]
-    """Excludes empty items from the results if True."""
+    """Exclude empty items from the results if True."""
 
     skip_hidden: NotRequired[bool]
-    """Excludes fields starting with '#' if True."""
+    """Exclude fields starting with '#' if True."""
 
     flatten: NotRequired[list[str]]
-    """Fields to be flattened in returned items."""
+    """Field to be flattened in returned items."""
 
     view: NotRequired[str]
-    """Specifies the dataset view to be used."""
+    """Specify the dataset view to be used."""
 
 
 class ExportToKwargs(TypedDict):
@@ -153,7 +154,7 @@ class ExportDataCsvKwargs(TypedDict):
 
 
 @docs_group('Classes')
-class Dataset(BaseStorage):
+class Dataset(Storage):
     """Represents an append-only structured storage, ideal for tabular data similar to database tables.
 
     The `Dataset` class is designed to store structured data, where each entry (row) maintains consistent attributes
@@ -194,13 +195,29 @@ class Dataset(BaseStorage):
     _EFFECTIVE_LIMIT_SIZE = _MAX_PAYLOAD_SIZE - (_MAX_PAYLOAD_SIZE * _SAFETY_BUFFER_PERCENT)
     """Calculated payload limit considering safety buffer."""
 
-    def __init__(self, id: str, name: str | None, storage_client: BaseStorageClient) -> None:
+    def __init__(self, id: str, name: str | None, storage_client: StorageClient) -> None:
         self._id = id
         self._name = name
+        datetime_now = datetime.now(timezone.utc)
+        self._storage_object = StorageMetadata(
+            id=id, name=name, accessed_at=datetime_now, created_at=datetime_now, modified_at=datetime_now
+        )
 
         # Get resource clients from the storage client.
         self._resource_client = storage_client.dataset(self._id)
         self._resource_collection_client = storage_client.datasets()
+
+    @classmethod
+    def from_storage_object(cls, storage_client: StorageClient, storage_object: StorageMetadata) -> Dataset:
+        """Initialize a new instance of Dataset from a storage metadata object."""
+        dataset = Dataset(
+            id=storage_object.id,
+            name=storage_object.name,
+            storage_client=storage_client,
+        )
+
+        dataset.storage_object = storage_object
+        return dataset
 
     @property
     @override
@@ -212,6 +229,16 @@ class Dataset(BaseStorage):
     def name(self) -> str | None:
         return self._name
 
+    @property
+    @override
+    def storage_object(self) -> StorageMetadata:
+        return self._storage_object
+
+    @storage_object.setter
+    @override
+    def storage_object(self, storage_object: StorageMetadata) -> None:
+        self._storage_object = storage_object
+
     @override
     @classmethod
     async def open(
@@ -220,7 +247,7 @@ class Dataset(BaseStorage):
         id: str | None = None,
         name: str | None = None,
         configuration: Configuration | None = None,
-        storage_client: BaseStorageClient | None = None,
+        storage_client: StorageClient | None = None,
     ) -> Dataset:
         from crawlee.storages._creation_management import open_storage
 
@@ -269,7 +296,7 @@ class Dataset(BaseStorage):
         return None
 
     async def get_data(self, **kwargs: Unpack[GetDataKwargs]) -> DatasetItemsListPage:
-        """Retrieves dataset items based on filtering, sorting, and pagination parameters.
+        """Retrieve dataset items based on filtering, sorting, and pagination parameters.
 
         This method allows customization of the data retrieval process from a dataset, supporting operations such as
         field selection, ordering, and skipping specific records based on provided parameters.
@@ -283,7 +310,7 @@ class Dataset(BaseStorage):
         return await self._resource_client.list_items(**kwargs)
 
     async def write_to_csv(self, destination: TextIO, **kwargs: Unpack[ExportDataCsvKwargs]) -> None:
-        """Exports the entire dataset into an arbitrary stream.
+        """Export the entire dataset into an arbitrary stream.
 
         Args:
             destination: The stream into which the dataset contents should be written.
@@ -307,7 +334,7 @@ class Dataset(BaseStorage):
             logger.warning('Attempting to export an empty dataset - no file will be created')
 
     async def write_to_json(self, destination: TextIO, **kwargs: Unpack[ExportDataJsonKwargs]) -> None:
-        """Exports the entire dataset into an arbitrary stream.
+        """Export the entire dataset into an arbitrary stream.
 
         Args:
             destination: The stream into which the dataset contents should be written.
@@ -330,7 +357,7 @@ class Dataset(BaseStorage):
             logger.warning('Attempting to export an empty dataset - no file will be created')
 
     async def export_to(self, **kwargs: Unpack[ExportToKwargs]) -> None:
-        """Exports the entire dataset into a specified file stored under a key in a key-value store.
+        """Export the entire dataset into a specified file stored under a key in a key-value store.
 
         This method consolidates all entries from a specified dataset into one file, which is then saved under a
         given key in a key-value store. The format of the exported file is determined by the `content_type` parameter.
@@ -340,7 +367,7 @@ class Dataset(BaseStorage):
         Args:
             kwargs: Keyword arguments for the storage client method.
         """
-        key = cast(str, kwargs.get('key'))
+        key = cast('str', kwargs.get('key'))
         content_type = kwargs.get('content_type', 'json')
         to_key_value_store_id = kwargs.get('to_key_value_store_id')
         to_key_value_store_name = kwargs.get('to_key_value_store_name')
@@ -381,17 +408,17 @@ class Dataset(BaseStorage):
         skip_empty: bool = False,
         skip_hidden: bool = False,
     ) -> AsyncIterator[dict]:
-        """Iterates over dataset items, applying filtering, sorting, and pagination.
+        """Iterate over dataset items, applying filtering, sorting, and pagination.
 
-        Retrieves dataset items incrementally, allowing fine-grained control over the data fetched. The function
+        Retrieve dataset items incrementally, allowing fine-grained control over the data fetched. The function
         supports various parameters to filter, sort, and limit the data returned, facilitating tailored dataset
         queries.
 
         Args:
             offset: Initial number of items to skip.
             limit: Max number of items to return. No limit if None.
-            clean: Filters out empty items and hidden fields if True.
-            desc: Returns items in reverse order if True.
+            clean: Filter out empty items and hidden fields if True.
+            desc: Return items in reverse order if True.
             fields: Specific fields to include in each item.
             omit: Fields to omit from each item.
             unwind: Field name to unwind items by.
@@ -416,7 +443,7 @@ class Dataset(BaseStorage):
 
     @classmethod
     async def check_and_serialize(cls, item: JsonSerializable, index: int | None = None) -> str:
-        """Serializes a given item to JSON, checks its serializability and size against a limit.
+        """Serialize a given item to JSON, checks its serializability and size against a limit.
 
         Args:
             item: The item to serialize.
@@ -442,7 +469,7 @@ class Dataset(BaseStorage):
         return payload
 
     async def _chunk_by_size(self, items: AsyncIterator[str]) -> AsyncIterator[str]:
-        """Yields chunks of JSON arrays composed of input strings, respecting a size limit.
+        """Yield chunks of JSON arrays composed of input strings, respecting a size limit.
 
         Groups an iterable of JSON string payloads into larger JSON arrays, ensuring the total size
         of each array does not exceed `EFFECTIVE_LIMIT_SIZE`. Each output is a JSON array string that

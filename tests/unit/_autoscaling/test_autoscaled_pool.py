@@ -12,7 +12,7 @@ from unittest.mock import Mock
 import pytest
 
 from crawlee._autoscaling import AutoscaledPool, SystemStatus
-from crawlee._autoscaling.types import LoadRatioInfo, SystemInfo
+from crawlee._autoscaling._types import LoadRatioInfo, SystemInfo
 from crawlee._types import ConcurrencySettings
 from crawlee._utils.measure_time import measure_time
 
@@ -170,7 +170,7 @@ async def test_autoscales(
 
         return result
 
-    cast(Mock, system_status.get_historical_system_info).side_effect = get_historical_system_info
+    cast('Mock', system_status.get_historical_system_info).side_effect = get_historical_system_info
 
     # Override AP class attributes using monkeypatch.
     monkeypatch.setattr(AutoscaledPool, '_AUTOSCALE_INTERVAL', timedelta(seconds=0.1))
@@ -244,7 +244,7 @@ async def test_autoscales_uses_desired_concurrency_ratio(
             client_info=LoadRatioInfo(limit_ratio=0.9, actual_ratio=0.3),
         )
 
-    cast(Mock, system_status.get_historical_system_info).side_effect = get_historical_system_info
+    cast('Mock', system_status.get_historical_system_info).side_effect = get_historical_system_info
 
     # Override AP class attributes using monkeypatch.
     monkeypatch.setattr(AutoscaledPool, '_AUTOSCALE_INTERVAL', timedelta(seconds=0.1))

@@ -37,8 +37,6 @@ _LOG_MESSAGE_INDENT = ' ' * 6
 def get_configured_log_level() -> int:
     config = service_locator.get_configuration()
 
-    verbose_logging_requested = 'verbose_log' in config.model_fields_set and config.verbose_log
-
     if 'log_level' in config.model_fields_set:
         if config.log_level == 'DEBUG':
             return logging.DEBUG
@@ -53,7 +51,7 @@ def get_configured_log_level() -> int:
 
         assert_never(config.log_level)
 
-    if sys.flags.dev_mode or verbose_logging_requested:
+    if sys.flags.dev_mode:
         return logging.DEBUG
 
     return logging.INFO
@@ -69,6 +67,9 @@ def configure_logger(logger: logging.Logger, *, remove_old_handlers: bool = Fals
 
     logger.addHandler(handler)
     logger.setLevel(get_configured_log_level())
+
+    # Do not propagate the log messages to the parent logger to prevent duplicate log messages.
+    logger.propagate = False
 
 
 class CrawleeLogFormatter(logging.Formatter):
@@ -93,7 +94,7 @@ class CrawleeLogFormatter(logging.Formatter):
         *args: Any,
         **kwargs: Any,
     ) -> None:
-        """A default constructor.
+        """Initialize a new instance.
 
         Args:
             include_logger_name: Include logger name at the beginning of the log line.

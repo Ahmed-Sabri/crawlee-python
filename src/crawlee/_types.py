@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -46,9 +47,14 @@ HttpPayload: TypeAlias = bytes
 
 RequestTransformAction: TypeAlias = Literal['skip', 'unchanged']
 
+EnqueueStrategy: TypeAlias = Literal['all', 'same-domain', 'same-hostname', 'same-origin']
+"""Enqueue strategy to be used for determining which links to extract and enqueue."""
+
+SkippedReason: TypeAlias = Literal['robots_txt']
+
 
 def _normalize_headers(headers: Mapping[str, str]) -> dict[str, str]:
-    """Converts all header keys to lowercase, strips whitespace, and returns them sorted by key."""
+    """Convert all header keys to lowercase, strips whitespace, and returns them sorted by key."""
     normalized_headers = {k.lower().strip(): v.strip() for k, v in headers.items()}
     sorted_headers = sorted(normalized_headers.items())
     return dict(sorted_headers)
@@ -64,7 +70,7 @@ class HttpHeaders(RootModel, Mapping[str, str]):
         dict[str, str],
         PlainValidator(lambda value: _normalize_headers(value)),
         Field(default_factory=dict),
-    ] = {}  # noqa: RUF012
+    ] = {}
 
     def __getitem__(self, key: str) -> str:
         return self.root[key.lower()]
@@ -93,27 +99,6 @@ class HttpHeaders(RootModel, Mapping[str, str]):
 
 
 @docs_group('Data structures')
-class EnqueueStrategy(str, Enum):
-    """Strategy for deciding which links should be followed and which ones should be ignored."""
-
-    ALL = 'all'
-    """Enqueues all links found, regardless of the domain they point to. This strategy is useful when you
-    want to follow every link, including those that navigate to external websites."""
-
-    SAME_DOMAIN = 'same-domain'
-    """Enqueues all links found that share the same domain name, including any possible subdomains.
-    This strategy ensures that all links within the same top-level and base domain are included."""
-
-    SAME_HOSTNAME = 'same-hostname'
-    """Enqueues all links found for the exact same hostname. This is the default strategy, and it restricts
-    the crawl to links that have the same hostname as the current page, excluding subdomains."""
-
-    SAME_ORIGIN = 'same-origin'
-    """Enqueues all links found that share the same origin. The same origin refers to URLs that share
-    the same protocol, domain, and port, ensuring a strict scope for the crawl."""
-
-
-@docs_group('Data structures')
 class ConcurrencySettings:
     """Concurrency settings for AutoscaledPool."""
 
@@ -124,7 +109,7 @@ class ConcurrencySettings:
         max_tasks_per_minute: float = float('inf'),
         desired_concurrency: int | None = None,
     ) -> None:
-        """A default constructor.
+        """Initialize a new instance.
 
         Args:
             min_concurrency: The minimum number of tasks running in parallel. If you set this value too high
@@ -172,7 +157,19 @@ class EnqueueLinksKwargs(TypedDict):
     """Base URL to be used for relative URLs."""
 
     strategy: NotRequired[EnqueueStrategy]
-    """Enqueueing strategy, see the `EnqueueStrategy` enum for possible values and their meanings."""
+    """Enqueue strategy to be used for determining which links to extract and enqueue.
+
+    Options:
+        all: Enqueue every link encountered, regardless of the target domain. Use this option to ensure that all
+            links, including those leading to external websites, are followed.
+        same-domain: Enqueue links that share the same domain name as the current page, including any subdomains.
+            This strategy is ideal for crawling within the same top-level domain while still allowing for subdomain
+            exploration.
+        same-hostname: Enqueue links only if they match the exact hostname of the current page. This is the default
+            behavior and restricts the crawl to the current hostname, excluding subdomains.
+        same-origin: Enqueue links that share the same origin as the current page. The origin is defined by the
+            combination of protocol, domain, and port, ensuring a strict scope for the crawl.
+    """
 
     include: NotRequired[list[re.Pattern | Glob]]
     """List of regular expressions or globs that URLs must match to be enqueued."""
@@ -250,7 +247,7 @@ class KeyValueStoreChangeRecords:
 
     async def get_value(self, key: str, default_value: T | None = None) -> T | None:
         if key in self.updates:
-            return cast(T, self.updates[key].content)
+            return cast('T', self.updates[key].content)
 
         return await self._actual_key_value_store.get_value(key, default_value)
 
@@ -330,11 +327,70 @@ class AddRequestsFunction(Protocol):
 
 @docs_group('Functions')
 class EnqueueLinksFunction(Protocol):
-    """A function for enqueueing new URLs to crawl based on elements selected by a given selector.
+    """A function for enqueueing new URLs to crawl based on elements selected by a given selector or explicit requests.
 
-    It extracts URLs from the current page and enqueues them for further crawling. It allows filtering through
-    selectors and other options. You can also specify labels and user data to be associated with the newly
-    created `Request` objects.
+    It adds explicitly passed `requests` to the `RequestManager` or it extracts URLs from the current page and enqueues
+    them for further crawling. It allows filtering through selectors and other options. You can also specify labels and
+    user data to be associated with the newly created `Request` objects.
+
+    It should not be called with `selector`, `label`, `user_data` or `transform_request_function` arguments together
+    with `requests` argument.
+
+    For even more control over the enqueued links you can use combination of `ExtractLinksFunction` and
+    `AddRequestsFunction`.
+    """
+
+    @overload
+    def __call__(
+        self,
+        *,
+        selector: str | None = None,
+        label: str | None = None,
+        user_data: dict[str, Any] | None = None,
+        transform_request_function: Callable[[RequestOptions], RequestOptions | RequestTransformAction] | None = None,
+        **kwargs: Unpack[EnqueueLinksKwargs],
+    ) -> Coroutine[None, None, None]: ...
+
+    @overload
+    def __call__(
+        self, *, requests: Sequence[str | Request] | None = None, **kwargs: Unpack[EnqueueLinksKwargs]
+    ) -> Coroutine[None, None, None]: ...
+
+    def __call__(
+        self,
+        *,
+        selector: str | None = None,
+        label: str | None = None,
+        user_data: dict[str, Any] | None = None,
+        transform_request_function: Callable[[RequestOptions], RequestOptions | RequestTransformAction] | None = None,
+        requests: Sequence[str | Request] | None = None,
+        **kwargs: Unpack[EnqueueLinksKwargs],
+    ) -> Coroutine[None, None, None]:
+        """Call enqueue links function.
+
+        Args:
+            selector: A selector used to find the elements containing the links. The behaviour differs based
+                on the crawler used:
+                - `PlaywrightCrawler` supports CSS and XPath selectors.
+                - `ParselCrawler` supports CSS selectors.
+                - `BeautifulSoupCrawler` supports CSS selectors.
+            label: Label for the newly created `Request` objects, used for request routing.
+            user_data: User data to be provided to the newly created `Request` objects.
+            transform_request_function: A function that takes `RequestOptions` and returns either:
+                - Modified `RequestOptions` to update the request configuration,
+                - `'skip'` to exclude the request from being enqueued,
+                - `'unchanged'` to use the original request options without modification.
+            requests: Requests to be added to the `RequestManager`.
+            **kwargs: Additional keyword arguments.
+        """
+
+
+@docs_group('Functions')
+class ExtractLinksFunction(Protocol):
+    """A function for extracting URLs to crawl based on elements selected by a given selector.
+
+    It extracts URLs from the current page and allows filtering through selectors and other options. You can also
+    specify labels and user data to be associated with the newly created `Request` objects.
     """
 
     def __call__(
@@ -345,8 +401,8 @@ class EnqueueLinksFunction(Protocol):
         user_data: dict[str, Any] | None = None,
         transform_request_function: Callable[[RequestOptions], RequestOptions | RequestTransformAction] | None = None,
         **kwargs: Unpack[EnqueueLinksKwargs],
-    ) -> Coroutine[None, None, None]:
-        """A call dunder method.
+    ) -> Coroutine[None, None, list[Request]]:
+        """Call extract links function.
 
         Args:
             selector: A selector used to find the elements containing the links. The behaviour differs based
@@ -492,17 +548,46 @@ class SendRequestFunction(Protocol):
         url: str,
         *,
         method: HttpMethod = 'GET',
+        payload: HttpPayload | None = None,
         headers: HttpHeaders | dict[str, str] | None = None,
     ) -> Coroutine[None, None, HttpResponse]:
-        """A call dunder method.
+        """Call send request function.
 
         Args:
             url: The URL to send the request to.
             method: The HTTP method to use.
             headers: The headers to include in the request.
+            payload: The payload to include in the request.
 
         Returns:
             The HTTP response received from the server.
+        """
+
+
+@docs_group('Data structures')
+@dataclasses.dataclass
+class PageSnapshot:
+    """Snapshot of a crawled page."""
+
+    screenshot: bytes | None = None
+    """Screenshot of the page format."""
+
+    html: str | None = None
+    """HTML content of the page."""
+
+    def __bool__(self) -> bool:
+        return bool(self.screenshot or self.html)
+
+
+@docs_group('Functions')
+class GetPageSnapshot(Protocol):
+    """A function for getting snapshot of a page."""
+
+    def __call__(self) -> Coroutine[None, None, PageSnapshot]:
+        """Get page snapshot.
+
+        Returns:
+            Snapshot of a page.
         """
 
 
@@ -565,6 +650,10 @@ class BasicCrawlingContext:
 
     log: logging.Logger
     """Logger instance."""
+
+    async def get_snapshot(self) -> PageSnapshot:
+        """Get snapshot of crawled page."""
+        return PageSnapshot()
 
     def __hash__(self) -> int:
         """Return hash of the context. Each context is considered unique."""

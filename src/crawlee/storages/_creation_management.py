@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING, TypeVar
+from weakref import WeakKeyDictionary
 
 from crawlee.storage_clients import MemoryStorageClient
 
@@ -11,13 +12,13 @@ from ._request_queue import RequestQueue
 
 if TYPE_CHECKING:
     from crawlee.configuration import Configuration
-    from crawlee.storage_clients._base import BaseStorageClient, ResourceClient, ResourceCollectionClient
+    from crawlee.storage_clients._base import ResourceClient, ResourceCollectionClient, StorageClient
 
 TResource = TypeVar('TResource', Dataset, KeyValueStore, RequestQueue)
 
 
-_creation_lock = asyncio.Lock()
-"""Lock for storage creation."""
+_creation_locks = WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]()
+"""Locks for storage creation (we need a separate lock for every event loop so that tests work as expected)."""
 
 _cache_dataset_by_id: dict[str, Dataset] = {}
 _cache_dataset_by_name: dict[str, Dataset] = {}
@@ -126,7 +127,7 @@ async def open_storage(
     id: str | None,
     name: str | None,
     configuration: Configuration,
-    storage_client: BaseStorageClient,
+    storage_client: StorageClient,
 ) -> TResource:
     """Open either a new storage or restore an existing one and return it."""
     # Try to restore the storage from cache by name
@@ -154,22 +155,26 @@ async def open_storage(
         await storage_client.purge_on_start()
 
     # Lock and create new storage
-    async with _creation_lock:
+    loop = asyncio.get_running_loop()
+    if loop not in _creation_locks:
+        _creation_locks[loop] = asyncio.Lock()
+
+    async with _creation_locks[loop]:
         if id and not is_default_on_memory:
             resource_client = _get_resource_client(storage_class, storage_client, id)
-            storage_info = await resource_client.get()
-            if not storage_info:
+            storage_object = await resource_client.get()
+            if not storage_object:
                 raise RuntimeError(f'{storage_class.__name__} with id "{id}" does not exist!')
 
         elif is_default_on_memory:
             resource_collection_client = _get_resource_collection_client(storage_class, storage_client)
-            storage_info = await resource_collection_client.get_or_create(name=name, id=id)
+            storage_object = await resource_collection_client.get_or_create(name=name, id=id)
 
         else:
             resource_collection_client = _get_resource_collection_client(storage_class, storage_client)
-            storage_info = await resource_collection_client.get_or_create(name=name)
+            storage_object = await resource_collection_client.get_or_create(name=name)
 
-        storage = storage_class(id=storage_info.id, name=storage_info.name, storage_client=storage_client)
+        storage = storage_class.from_storage_object(storage_client=storage_client, storage_object=storage_object)
 
         # Cache the storage by ID and name
         _add_to_cache_by_id(storage.id, storage)
@@ -195,7 +200,7 @@ def remove_storage_from_cache(
 
 def _get_resource_client(
     storage_class: type[TResource],
-    storage_client: BaseStorageClient,
+    storage_client: StorageClient,
     id: str,
 ) -> ResourceClient:
     if issubclass(storage_class, Dataset):
@@ -212,7 +217,7 @@ def _get_resource_client(
 
 def _get_resource_collection_client(
     storage_class: type,
-    storage_client: BaseStorageClient,
+    storage_client: StorageClient,
 ) -> ResourceCollectionClient:
     if issubclass(storage_class, Dataset):
         return storage_client.datasets()

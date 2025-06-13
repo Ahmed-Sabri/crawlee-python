@@ -8,18 +8,15 @@ from decimal import Decimal
 from logging import getLogger
 from typing import TYPE_CHECKING
 
-from sortedcollections import ValueSortedDict  # type: ignore[import-untyped]
+from sortedcollections import ValueSortedDict
 from typing_extensions import override
 
 from crawlee._types import StorageTypes
 from crawlee._utils.crypto import crypto_random_object_id
-from crawlee._utils.data_processing import (
-    raise_on_duplicate_storage,
-    raise_on_non_existing_storage,
-)
+from crawlee._utils.data_processing import raise_on_duplicate_storage, raise_on_non_existing_storage
 from crawlee._utils.file import force_remove, force_rename, json_dumps
 from crawlee._utils.requests import unique_key_to_request_id
-from crawlee.storage_clients._base import BaseRequestQueueClient
+from crawlee.storage_clients._base import RequestQueueClient as BaseRequestQueueClient
 from crawlee.storage_clients.models import (
     BatchRequestsOperationResponse,
     InternalRequest,
@@ -73,7 +70,9 @@ class RequestQueueClient(BaseRequestQueueClient):
             lambda request: request.order_no or -float('inf')
         )
         self.file_operation_lock = asyncio.Lock()
-        self._last_used_timestamp = Decimal(0.0)
+        self._last_used_timestamp = Decimal(0)
+
+        self._in_progress = set[str]()
 
     @property
     def resource_info(self) -> RequestQueueMetadata:
@@ -173,7 +172,7 @@ class RequestQueueClient(BaseRequestQueueClient):
                     await asyncio.to_thread(shutil.rmtree, queue.resource_directory)
 
     @override
-    async def list_head(self, *, limit: int | None = None) -> RequestQueueHead:
+    async def list_head(self, *, limit: int | None = None, skip_in_progress: bool = False) -> RequestQueueHead:
         existing_queue_by_id = find_or_create_client_by_id_or_name_inner(
             resource_client_class=RequestQueueClient,
             memory_storage_client=self._memory_storage_client,
@@ -197,6 +196,8 @@ class RequestQueueClient(BaseRequestQueueClient):
                 if len(requests) == limit:
                     break
 
+                if skip_in_progress and request_key in existing_queue_by_id._in_progress:  # noqa: SLF001
+                    continue
                 internal_request = existing_queue_by_id.requests.get(request_key)
 
                 # Check that the request still exists and was not handled,
@@ -213,8 +214,23 @@ class RequestQueueClient(BaseRequestQueueClient):
 
     @override
     async def list_and_lock_head(self, *, lock_secs: int, limit: int | None = None) -> RequestQueueHeadWithLocks:
-        result = await self.list_head(limit=limit)
+        existing_queue_by_id = find_or_create_client_by_id_or_name_inner(
+            resource_client_class=RequestQueueClient,
+            memory_storage_client=self._memory_storage_client,
+            id=self.id,
+            name=self.name,
+        )
+
+        if existing_queue_by_id is None:
+            raise_on_non_existing_storage(StorageTypes.REQUEST_QUEUE, self.id)
+
+        result = await self.list_head(limit=limit, skip_in_progress=True)
+
+        for item in result.items:
+            existing_queue_by_id._in_progress.add(item.id)  # noqa: SLF001
+
         return RequestQueueHeadWithLocks(
+            queue_has_locked_requests=len(existing_queue_by_id._in_progress) > 0,  # noqa: SLF001
             lock_secs=lock_secs,
             limit=result.limit,
             had_multiple_clients=result.had_multiple_clients,
@@ -344,6 +360,9 @@ class RequestQueueClient(BaseRequestQueueClient):
                 persist_storage=self._memory_storage_client.persist_storage,
             )
 
+            if request.handled_at is not None:
+                existing_queue_by_id._in_progress.discard(request.id)  # noqa: SLF001
+
             return ProcessedRequest(
                 id=internal_request.id,
                 unique_key=internal_request.unique_key,
@@ -395,7 +414,17 @@ class RequestQueueClient(BaseRequestQueueClient):
         *,
         forefront: bool = False,
     ) -> None:
-        return None
+        existing_queue_by_id = find_or_create_client_by_id_or_name_inner(
+            resource_client_class=RequestQueueClient,
+            memory_storage_client=self._memory_storage_client,
+            id=self.id,
+            name=self.name,
+        )
+
+        if existing_queue_by_id is None:
+            raise_on_non_existing_storage(StorageTypes.REQUEST_QUEUE, self.id)
+
+        existing_queue_by_id._in_progress.discard(request_id)  # noqa: SLF001
 
     @override
     async def batch_add_requests(
@@ -457,7 +486,7 @@ class RequestQueueClient(BaseRequestQueueClient):
         entity_directory: str,
         persist_storage: bool,
     ) -> None:
-        """Updates or writes a single request item to the disk.
+        """Update or writes a single request item to the disk.
 
         This function writes a given request dictionary to a JSON file, named after the request's ID,
         within a specified directory. The writing process is skipped if `persist_storage` is False.
@@ -485,7 +514,7 @@ class RequestQueueClient(BaseRequestQueueClient):
             f.close()
 
     async def _delete_request_file_from_storage(self, *, request_id: str, entity_directory: str) -> None:
-        """Deletes a specific request item from the disk.
+        """Delete a specific request item from the disk.
 
         This function removes a file representing a request, identified by the request's ID, from a
         specified directory. Before attempting to remove the file, it ensures that the target directory
@@ -517,12 +546,12 @@ class RequestQueueClient(BaseRequestQueueClient):
             return None
 
         # Get the current timestamp in milliseconds
-        timestamp = Decimal(datetime.now(timezone.utc).timestamp()) * 1000
+        timestamp = Decimal(str(datetime.now(tz=timezone.utc).timestamp())) * Decimal(1000)
         timestamp = round(timestamp, 6)
 
         # Make sure that this timestamp was not used yet, so that we have unique order_nos
         if timestamp <= self._last_used_timestamp:
-            timestamp = self._last_used_timestamp + Decimal(0.000001)
+            timestamp = self._last_used_timestamp + Decimal('0.000001')
 
         self._last_used_timestamp = timestamp
 

@@ -14,7 +14,7 @@ from crawlee._types import StorageTypes
 from crawlee._utils.crypto import crypto_random_object_id
 from crawlee._utils.data_processing import maybe_parse_body, raise_on_duplicate_storage, raise_on_non_existing_storage
 from crawlee._utils.file import determine_file_extension, force_remove, force_rename, is_file_or_bytes, json_dumps
-from crawlee.storage_clients._base import BaseKeyValueStoreClient
+from crawlee.storage_clients._base import KeyValueStoreClient as BaseKeyValueStoreClient
 from crawlee.storage_clients.models import (
     KeyValueStoreKeyInfo,
     KeyValueStoreListKeysPage,
@@ -334,13 +334,13 @@ class KeyValueStoreClient(BaseKeyValueStoreClient):
             await asyncio.to_thread(f.close)
 
         if self._memory_storage_client.write_metadata:
-            f = await asyncio.to_thread(open, record_metadata_path, mode='wb')
+            metadata_f = await asyncio.to_thread(open, record_metadata_path, mode='wb')
 
             try:
                 record_metadata = KeyValueStoreRecordMetadata(key=record.key, content_type=record.content_type)
-                await asyncio.to_thread(f.write, record_metadata.model_dump_json(indent=2).encode('utf-8'))
+                await asyncio.to_thread(metadata_f.write, record_metadata.model_dump_json(indent=2).encode('utf-8'))
             finally:
-                await asyncio.to_thread(f.close)
+                await asyncio.to_thread(metadata_f.close)
 
     async def delete_persisted_record(self, record: KeyValueStoreRecord) -> None:
         """Delete the specified record from the key-value store."""

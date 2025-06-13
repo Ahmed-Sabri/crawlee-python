@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 @docs_group('Abstract classes')
 class RequestLoader(ABC):
-    """Abstract base class defining the interface for classes that provide access to a read-only stream of requests.
+    """An abstract class defining the interface for classes that provide access to a read-only stream of requests.
 
     Request loaders are used to manage and provide access to a storage of crawling requests.
 
@@ -43,7 +43,7 @@ class RequestLoader(ABC):
 
     @abstractmethod
     async def mark_request_as_handled(self, request: Request) -> ProcessedRequest | None:
-        """Marks a request as handled after a successful processing (or after giving up retrying)."""
+        """Mark a request as handled after a successful processing (or after giving up retrying)."""
 
     @abstractmethod
     async def get_handled_count(self) -> int:
@@ -65,7 +65,7 @@ class RequestLoader(ABC):
         return RequestManagerTandem(self, request_manager)
 
     def _transform_request(self, request: str | Request) -> Request:
-        """Transforms a request-like object into a Request object."""
+        """Transform a request-like object into a Request object."""
         if isinstance(request, Request):
             return request
 
@@ -75,7 +75,7 @@ class RequestLoader(ABC):
         raise ValueError(f'Invalid request type: {type(request)}')
 
     def _transform_requests(self, requests: Sequence[str | Request]) -> list[Request]:
-        """Transforms a list of request-like objects into a list of `Request` objects."""
+        """Transform a list of request-like objects into a list of `Request` objects."""
         processed_requests = dict[str, Request]()
 
         for request in requests:

@@ -1,54 +1,58 @@
-.PHONY: clean install-dev build publish-to-pypi lint type-check unit-tests unit-tests-cov integration-tests format check-code build-api-reference run-docs
+.PHONY: clean install-sync install-dev build publish-to-pypi lint type-check unit-tests unit-tests-cov \
+	e2e-templates-tests format check-code build-api-reference run-docs
 
 # This is default for local testing, but GitHub workflows override it to a higher value in CI
-INTEGRATION_TESTS_CONCURRENCY = 1
+E2E_TESTS_CONCURRENCY = 1
 
 clean:
 	rm -rf .mypy_cache .pytest_cache .ruff_cache build dist htmlcov .coverage
 
+install-sync:
+	uv sync --all-extras
+
 install-dev:
-	poetry install --all-extras
-	poetry run pre-commit install
-	poetry run playwright install
-	poetry run python -m browserforge update
+	make install-sync
+	uv run pre-commit install
+	uv run playwright install
 
 build:
-	poetry build --no-interaction -vv
+	uv build --verbose
 
 # APIFY_PYPI_TOKEN_CRAWLEE is expected to be set in the environment
 publish-to-pypi:
-	poetry config pypi-token.pypi "${APIFY_PYPI_TOKEN_CRAWLEE}"
-	poetry publish --no-interaction -vv
+	uv publish --verbose --token "${APIFY_PYPI_TOKEN_CRAWLEE}"
 
 lint:
-	poetry run ruff format --check
-	poetry run ruff check
+	uv run ruff format --check
+	uv run ruff check
 
 type-check:
-	poetry run mypy
+	uv run mypy
 
 unit-tests:
-	poetry run pytest --numprocesses=auto --verbose --cov=src/crawlee tests/unit
+	uv run pytest --numprocesses=auto --verbose tests/unit -m "not run_alone"
+	uv run pytest --numprocesses=1 --verbose --cov-report=html tests/unit -m "run_alone"
 
 unit-tests-cov:
-	poetry run pytest --numprocesses=auto --verbose --cov=src/crawlee --cov-report=html tests/unit
+	uv run pytest --numprocesses=auto --verbose --cov=src/crawlee tests/unit -m "not run_alone"
+	uv run pytest --numprocesses=1 --verbose --cov=src/crawlee --cov-report=html tests/unit -m "run_alone"
 
-integration-tests:
-	poetry run pytest --numprocesses=$(INTEGRATION_TESTS_CONCURRENCY) tests/integration
+e2e-templates-tests $(args):
+	uv run pytest --numprocesses=$(E2E_TESTS_CONCURRENCY) --verbose tests/e2e/project_template "$(args)"
 
 format:
-	poetry run ruff check --fix
-	poetry run ruff format
+	uv run ruff check --fix
+	uv run ruff format
 
 # The check-code target runs a series of checks equivalent to those performed by pre-commit hooks
 # and the run_checks.yaml GitHub Actions workflow.
 check-code: lint type-check unit-tests
 
 build-api-reference:
-	cd website && poetry run ./build_api_reference.sh
+	cd website && uv run ./build_api_reference.sh
 
 build-docs:
-	cd website && corepack enable && yarn && poetry run yarn build
+	cd website && corepack enable && yarn && uv run yarn build
 
 run-docs: build-api-reference
-	cd website && corepack enable && yarn && poetry run yarn start
+	cd website && corepack enable && yarn && uv run yarn start
