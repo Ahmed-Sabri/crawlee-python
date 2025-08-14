@@ -1,65 +1,85 @@
-#pip install 'crawlee[curl-impersonate]' 'crawlee[playwright]' curl_cffi crawlee 'crawlee[all]' 
-import asyncio
-import os
-from crawlee.crawlers import BeautifulSoupCrawler, BeautifulSoupCrawlingContext
-from bs4 import BeautifulSoup
-import requests
-from urllib.parse import urlsplit
-import bleach
-import markdown
+#!/usr/bin/env python3
+import asyncio, hashlib, re, sys, urllib.parse as up
+from pathlib import Path
+from typing import Set, List
 
-async def main() -> None:
-    # Prompt the user to enter the website they need to crawl and scrape
-    website = input("Enter the website you want to crawl and scrape: ")
+import httpx, trafilatura
+from tqdm import tqdm
 
-    # Create a folder with the name of the website
-    folder_name = website.split("//")[-1].split("/")[0]
-    if not os.path.exists(folder_name):
-        os.makedirs(folder_name)
+# ---------- CONFIG ----------
+MAX_DEPTH = 4          # avoids infinite spider traps
+CRAWL_DELAY = 1.0       # polite scanning
+HEADERS = {"User-Agent": "Mozilla/5.0 ..."}
+# ----------------------------
 
-    # Create separate folders for HTML and Markdown files
-    html_folder = os.path.join(folder_name, "html")
-    markdown_folder = os.path.join(folder_name, "markdown")
-    if not os.path.exists(html_folder):
-        os.makedirs(html_folder)
-    if not os.path.exists(markdown_folder):
-        os.makedirs(markdown_folder)
+def slugify_url(url: str) -> str:
+    slug = re.sub(r'[^0-9A-Za-z\-]+', '-', up.urlparse(url).path or 'index')[:120]
+    h = hashlib.sha256(url.encode()).hexdigest()[:6]
+    fname = f"{slug}-{h}.md".lower()
+    if len(fname.encode('utf-8')) > 240:
+        cut = 240 - 9
+        fname = f"{slug[:cut]}-{h}.md"
+    return fname
 
-    # BeautifulSoupCrawler crawls the web using HTTP requests and parses HTML using the BeautifulSoup library.
-    crawler = BeautifulSoupCrawler(max_requests_per_crawl=50000)
+async def scan(start: str) -> List[str]:
+    seen, frontier = set([start]), [start]
+    pbar = tqdm(desc="Scanning", total=1, unit="url")
+    async with httpx.AsyncClient(headers=HEADERS, timeout=10) as client:
+        while frontier:
+            url = frontier.pop(0)
+            pbar.set_postfix(url=url[-40:])
+            try:
+                r = await client.get(url)
+                r.raise_for_status()
+                for href in re.findall(r'href=[\'"]?([^\'" >]+)', r.text):
+                    nxt = up.urljoin(url, href)
+                    if up.urlparse(nxt).netloc == up.urlparse(start).netloc and nxt not in seen:
+                        seen.add(nxt); frontier.append(nxt)
+                        pbar.total += 1; pbar.refresh()
+            except Exception:
+                pass
+            pbar.update()
+            await asyncio.sleep(CRAWL_DELAY)
+    pbar.close()
+    return list(seen)
 
-    # Define a request handler to process each crawled page and attach it to the crawler using a decorator.
-    @crawler.router.default_handler
-    async def request_handler(context: BeautifulSoupCrawlingContext) -> None:
-        context.log.info(f'Processing {context.request.url} ...')
-        # Extract relevant data from the page context.
-        data = {
-            'url': context.request.url,
-            'title': context.soup.title.string if context.soup.title else None,
-        }
-        # Store the extracted data.
-        await context.push_data(data)
-        # Extract links from the current page and add them to the crawling queue.
-        await context.enqueue_links()
+async def scrape(urls: List[str], out_dir: Path):
+    pbar = tqdm(desc="Scraping", total=len(urls), unit="page")
+    success = 0
+    async with httpx.AsyncClient(headers=HEADERS, timeout=15) as client:
+        for url in urls:
+            try:
+                r = await client.get(url)
+                if (res := trafilatura.extract(r.text, url=url,
+                                               output_format="markdown",
+                                               include_comments=False)):
+                    Path(out_dir, slugify_url(url)).write_text(res, encoding="utf-8")
+                    success += 1
+            except Exception:
+                pass
+            pbar.set_postfix(success=success, fail=pbar.n - success)
+            pbar.update()
+    pbar.close()
 
-        # Download the crawled HTML file
-        response = requests.get(context.request.url)
-        html_file = os.path.join(html_folder, f"{urlsplit(context.request.url).path.split('/')[-1]}.html")
-        with open(html_file, "w") as file:
-            file.write(response.text)
+def main():
+    start = input("Start URL: ").strip()
+    if not start.startswith(("http://", "https://")):
+        start = "http://" + start
+    domain = up.urlparse(start).netloc.replace(':', '_')
+    out_dir = Path(domain); out_dir.mkdir(exist_ok=True)
 
-        # Convert the HTML file to Markdown
-        html_file = os.path.join(html_folder, f"{urlsplit(context.request.url).path.split('/')[-1]}.html")
-        markdown_file = os.path.join(markdown_folder, f"{urlsplit(context.request.url).path.split('/')[-1]}.md")
-        with open(html_file, "r") as file:
-            html = file.read()
-        markdown_text = bleach.clean(html, tags=[], strip=True)
-        markdown_text = markdown.markdown(markdown_text)
-        with open(markdown_file, "w") as file:
-            file.write(markdown_text)
+    print("➜ Phase 1: scanning...")
+    urls = asyncio.run(scan(start))
+    count = len(urls)
+    print(f"Discovered {count} unique in-scope pages.")
 
-    # Add first URL to the queue and start the crawl.
-    await crawler.run([website])
+    limit = input(f"Enter pages to scrape [default={count}]: ").strip()
+    limit = int(limit) if limit.isdigit() and int(limit) > 0 else count
+    urls = urls[:limit]
 
-if __name__ == '__main__':
-    asyncio.run(main())
+    print("➜ Phase 2: scraping...")
+    asyncio.run(scrape(urls, out_dir))
+    print(f"Done. Markdown saved to ./{domain}")
+
+if __name__ == "__main__":
+    main()
